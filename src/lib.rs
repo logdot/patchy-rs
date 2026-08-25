@@ -12,13 +12,17 @@ compile_error!("patchy currently supports only 64-bit Windows targets");
 mod arch;
 mod error;
 mod patch;
+mod process_module;
 mod relative_jump;
 mod session;
+mod trampoline;
 
 pub use error::PatchError;
 pub use patch::Patch;
+pub use process_module::ProcessModule;
 pub use relative_jump::relative_offset;
 pub use session::finalize_patches;
+pub use trampoline::{Label, Trampoline};
 
 /// Selects which hook return register is allowed to replace the original value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

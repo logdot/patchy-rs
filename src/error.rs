@@ -18,6 +18,8 @@ pub enum PatchError {
     },
     /// Executable memory could not be allocated or sealed.
     Mapping(String),
+    /// A loaded process module could not be found.
+    ModuleLookup(String),
     /// No executable allocation could be placed within rel32 range of a hook.
     NoMemoryCave {
         /// The source address of the hook.
@@ -65,6 +67,21 @@ pub enum PatchError {
         /// The returned size.
         actual: usize,
     },
+    /// A trampoline label does not belong to the builder using it.
+    InvalidLabel {
+        /// The invalid label identifier.
+        label: usize,
+    },
+    /// A trampoline label was bound more than once.
+    LabelAlreadyBound {
+        /// The duplicate label identifier.
+        label: usize,
+    },
+    /// A trampoline was built with an unbound label.
+    UnboundLabel {
+        /// The unbound label identifier.
+        label: usize,
+    },
 }
 
 impl fmt::Display for PatchError {
@@ -78,6 +95,7 @@ impl fmt::Display for PatchError {
                 "unable to flush the instruction cache at {address:#x}: {error}"
             ),
             Self::Mapping(error) => write!(f, "memory mapping failed: {error}"),
+            Self::ModuleLookup(error) => write!(f, "unable to find process module: {error}"),
             Self::NoMemoryCave { hook, last_error } => {
                 write!(f, "no usable trampoline page found near {hook:#x}")?;
                 if let Some(error) = last_error {
@@ -111,6 +129,18 @@ impl fmt::Display for PatchError {
                 f,
                 "trampoline builder produced {actual} bytes instead of {expected}"
             ),
+            Self::InvalidLabel { label } => {
+                write!(
+                    f,
+                    "trampoline label {label} does not belong to this builder"
+                )
+            }
+            Self::LabelAlreadyBound { label } => {
+                write!(f, "trampoline label {label} was bound more than once")
+            }
+            Self::UnboundLabel { label } => {
+                write!(f, "trampoline label {label} was never bound")
+            }
         }
     }
 }

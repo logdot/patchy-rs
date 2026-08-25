@@ -78,3 +78,60 @@ pub(crate) fn build_call(function: *const (), allow_return: ReturnType) -> Vec<u
 
     code
 }
+
+pub(crate) fn push_preserved_predicate_call(
+    code: &mut Vec<u8>,
+    function: *const (),
+    argument_setup: &[u8],
+) {
+    // Preserve every volatile integer register, including RAX so the inline
+    // hook does not leak the predicate's Boolean return value.
+    code.extend_from_slice(&[
+        0x50, // PUSH RAX
+        0x51, // PUSH RCX
+        0x52, // PUSH RDX
+        0x41, 0x50, // PUSH R8
+        0x41, 0x51, // PUSH R9
+        0x41, 0x52, // PUSH R10
+        0x41, 0x53, // PUSH R11
+    ]);
+
+    // Reserve the 0x20-byte Windows shadow space, 0x60 bytes for XMM0-XMM5,
+    // and 0x08 bytes of alignment padding. Seven pushes plus 0x88 bytes keep
+    // RSP 16-byte aligned at the call site.
+    code.extend_from_slice(&[0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00]);
+    code.extend_from_slice(&[
+        0xF3, 0x0F, 0x7F, 0x44, 0x24, 0x20, // MOVDQU [RSP+0x20], XMM0
+        0xF3, 0x0F, 0x7F, 0x4C, 0x24, 0x30, // MOVDQU [RSP+0x30], XMM1
+        0xF3, 0x0F, 0x7F, 0x54, 0x24, 0x40, // MOVDQU [RSP+0x40], XMM2
+        0xF3, 0x0F, 0x7F, 0x5C, 0x24, 0x50, // MOVDQU [RSP+0x50], XMM3
+        0xF3, 0x0F, 0x7F, 0x64, 0x24, 0x60, // MOVDQU [RSP+0x60], XMM4
+        0xF3, 0x0F, 0x7F, 0x6C, 0x24, 0x70, // MOVDQU [RSP+0x70], XMM5
+    ]);
+
+    code.extend_from_slice(argument_setup);
+    code.extend_from_slice(&CALL_BYTES);
+    code.extend_from_slice(&(function as usize).to_le_bytes());
+
+    // Capture the predicate result before restoring RAX. None of the restore
+    // instructions below alter flags, so a conditional jump can consume the
+    // result after every volatile register has its original value.
+    code.extend_from_slice(&[0x84, 0xC0]); // TEST AL, AL
+    code.extend_from_slice(&[
+        0xF3, 0x0F, 0x6F, 0x44, 0x24, 0x20, // MOVDQU XMM0, [RSP+0x20]
+        0xF3, 0x0F, 0x6F, 0x4C, 0x24, 0x30, // MOVDQU XMM1, [RSP+0x30]
+        0xF3, 0x0F, 0x6F, 0x54, 0x24, 0x40, // MOVDQU XMM2, [RSP+0x40]
+        0xF3, 0x0F, 0x6F, 0x5C, 0x24, 0x50, // MOVDQU XMM3, [RSP+0x50]
+        0xF3, 0x0F, 0x6F, 0x64, 0x24, 0x60, // MOVDQU XMM4, [RSP+0x60]
+        0xF3, 0x0F, 0x6F, 0x6C, 0x24, 0x70, // MOVDQU XMM5, [RSP+0x70]
+        // LEA restores RSP without changing the predicate flags.
+        0x48, 0x8D, 0xA4, 0x24, 0x88, 0x00, 0x00, 0x00, // LEA RSP, [RSP+0x88]
+        0x41, 0x5B, // POP R11
+        0x41, 0x5A, // POP R10
+        0x41, 0x59, // POP R9
+        0x41, 0x58, // POP R8
+        0x5A, // POP RDX
+        0x59, // POP RCX
+        0x58, // POP RAX
+    ]);
+}

@@ -1,7 +1,7 @@
 use core::slice;
 
 use crate::{
-    PatchError, ReturnType,
+    PatchError, ReturnType, Trampoline,
     arch::build_call,
     relative_jump::{NEAR_JUMP, NEAR_JUMP_SIZE, build_near_jump, relative_offset},
     session::{PendingPatch, patch_manager},
@@ -95,6 +95,26 @@ impl Patch {
         unsafe {
             Self::detour_with(address, size, trampoline.len(), move |_| {
                 Ok(trampoline.clone())
+            })
+        }
+    }
+
+    /// Prepares a near jump to a relocation-aware trampoline.
+    ///
+    /// # Safety
+    ///
+    /// The source range must be readable and contain complete instructions.
+    /// The built trampoline must preserve the surrounding function state on
+    /// every exit.
+    pub unsafe fn detour_trampoline(address: usize, size: usize, trampoline: Trampoline) -> Self {
+        let trampoline_size = trampoline.len();
+        assert!(trampoline_size > 0, "A detour trampoline cannot be empty");
+
+        // SAFETY: The caller provides the validity guarantees documented by
+        // this method.
+        unsafe {
+            Self::detour_with(address, size, trampoline_size, move |trampoline_address| {
+                trampoline.build(trampoline_address)
             })
         }
     }
