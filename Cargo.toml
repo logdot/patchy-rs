@@ -9,6 +9,7 @@ name = "patchy"
 [dependencies]
 log = "0.4"
 mmap-rs = "0.6"
+thiserror = "1"
 
 [dependencies.windows]
 version = "0.62"
