@@ -1,0 +1,37 @@
+@PACKAGE_INIT@
+
+if(NOT WIN32)
+    set(Patchy_FOUND FALSE)
+    set(Patchy_NOT_FOUND_MESSAGE "Patchy supports only 64-bit Windows")
+    return()
+endif()
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(Patchy_FOUND FALSE)
+    set(Patchy_NOT_FOUND_MESSAGE "Patchy requires a 64-bit CMake toolchain")
+    return()
+endif()
+
+if(NOT TARGET Patchy::ffi)
+    add_library(Patchy::ffi SHARED IMPORTED)
+    set_target_properties(
+        Patchy::ffi
+        PROPERTIES
+            IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/bin/patchy_ffi.dll"
+            IMPORTED_IMPLIB "${PACKAGE_PREFIX_DIR}/lib/patchy_ffi.dll.lib"
+            INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include"
+    )
+endif()
+
+if(NOT TARGET Patchy::ffi_static)
+    add_library(Patchy::ffi_static STATIC IMPORTED)
+    set_target_properties(
+        Patchy::ffi_static
+        PROPERTIES
+            IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/lib/patchy_ffi.lib"
+            INTERFACE_COMPILE_DEFINITIONS PATCHY_STATIC
+            INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include"
+            INTERFACE_LINK_LIBRARIES "@PATCHY_STATIC_SYSTEM_LIBRARIES@"
+    )
+endif()
+
+check_required_components(Patchy)
