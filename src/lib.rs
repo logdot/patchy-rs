@@ -1,8 +1,8 @@
 //! Runtime code patching for 64-bit Windows processes.
 //!
-//! Patchy prepares overwrites and x86-64 call trampolines before installing
-//! them as one batch with [`finalize_patches`]. It currently targets only the
-//! Windows x64 ABI.
+//! Patchy prepares overwrites and x86-64 call trampolines in a [`PatchSession`]
+//! before installing them permanently as one batch. It currently targets only
+//! the Windows x64 ABI.
 
 #![cfg_attr(not(all(target_os = "windows", target_arch = "x86_64")), allow(unused))]
 
@@ -21,7 +21,7 @@ pub use error::PatchError;
 pub use patch::Patch;
 pub use process_module::ProcessModule;
 pub use relative_jump::relative_offset;
-pub use session::finalize_patches;
+pub use session::PatchSession;
 pub use trampoline::{Condition, Label, Trampoline};
 
 /// A result returned by Patchy operations.

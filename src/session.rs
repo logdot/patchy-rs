@@ -20,8 +20,12 @@ use crate::{
     },
 };
 
+/// A batch of runtime patches being prepared for permanent installation.
+///
+/// Dropping a session before installation discards its patches and releases
+/// its writable trampoline allocations without modifying the target process.
 #[derive(Default)]
-pub(crate) struct PatchSession {
+pub struct PatchSession {
     pages: Vec<MutableCodePage>,
     pub(crate) pending: Vec<PendingPatch>,
 }
@@ -33,47 +37,36 @@ struct MutableCodePage {
 
 pub(crate) struct PendingPatch {
     pub(crate) address: usize,
-    pub(crate) overwritten: Vec<u8>,
+    pub(crate) expected: Vec<u8>,
     pub(crate) replacement: Vec<u8>,
 }
 
-struct PatchRuntime {
-    pages: Vec<Mmap>,
-    patches: Vec<PendingPatch>,
+#[derive(Clone, Copy)]
+struct InstalledPatch {
+    address: usize,
+    size: usize,
 }
 
-pub(crate) struct PatchManager {
-    session: Option<PatchSession>,
-    runtime: Option<PatchRuntime>,
+struct PermanentPatchSet {
+    _pages: Vec<Mmap>,
+    patches: Vec<InstalledPatch>,
 }
 
-impl PatchManager {
-    fn new() -> Self {
-        Self {
-            session: Some(PatchSession::default()),
-            runtime: None,
-        }
-    }
+static PERMANENT_PATCH_SETS: OnceLock<Mutex<Vec<PermanentPatchSet>>> = OnceLock::new();
 
-    pub(crate) fn session_mut(&mut self) -> Result<&mut PatchSession, PatchError> {
-        if self.runtime.is_some() {
-            return Err(PatchError::AlreadyFinalized);
-        }
-
-        self.session.as_mut().ok_or(PatchError::AlreadyFinalized)
-    }
-}
-
-static PATCH_MANAGER: OnceLock<Mutex<PatchManager>> = OnceLock::new();
-
-pub(crate) fn patch_manager() -> Result<MutexGuard<'static, PatchManager>, PatchError> {
-    PATCH_MANAGER
-        .get_or_init(|| Mutex::new(PatchManager::new()))
+fn permanent_patch_sets() -> MutexGuard<'static, Vec<PermanentPatchSet>> {
+    PERMANENT_PATCH_SETS
+        .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
-        .map_err(|_| PatchError::ManagerPoisoned)
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl PatchSession {
+    /// Creates an empty patch preparation session.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub(crate) fn ensure_patch_does_not_overlap(
         &self,
         address: usize,
@@ -337,8 +330,8 @@ unsafe fn validate_patch_sources(patches: &[PendingPatch]) -> Result<(), PatchEr
         // SAFETY: Patch preparation required this source range to remain
         // readable through installation.
         let current =
-            unsafe { slice::from_raw_parts(patch.address as *const u8, patch.overwritten.len()) };
-        if current != patch.overwritten {
+            unsafe { slice::from_raw_parts(patch.address as *const u8, patch.expected.len()) };
+        if current != patch.expected {
             return Err(PatchError::SourceChanged {
                 address: patch.address,
             });
@@ -348,108 +341,145 @@ unsafe fn validate_patch_sources(patches: &[PendingPatch]) -> Result<(), PatchEr
     Ok(())
 }
 
-/// Seals all prepared trampoline pages as executable and installs every patch.
-///
-/// This process-wide patch set can be finalized only once.
-///
-/// # Safety
-///
-/// No other thread may execute a patch source while its instructions are being
-/// replaced. Every source range and prepared trampoline must still satisfy the
-/// requirements documented by the corresponding [`crate::Patch`] operation.
-pub unsafe fn finalize_patches() -> Result<(), PatchError> {
-    let mut manager = patch_manager()?;
-    if manager.runtime.is_some() || manager.session.is_none() {
-        return Err(PatchError::AlreadyFinalized);
-    }
-
-    let session = manager.session.take().ok_or(PatchError::AlreadyFinalized)?;
-    let mut executable_pages = Vec::with_capacity(session.pages.len());
-    for page in session.pages {
-        match page.mapping.make_exec() {
-            Ok(mapping) => executable_pages.push(mapping),
-            Err((_mapping, error)) => return Err(PatchError::Mapping(error.to_string())),
+fn ensure_patches_do_not_overlap_installed(
+    installed_sets: &[PermanentPatchSet],
+    pending: &[PendingPatch],
+) -> Result<(), PatchError> {
+    for patch in pending {
+        let patch_end = patch
+            .address
+            .checked_add(patch.replacement.len())
+            .ok_or(PatchError::AddressOverflow)?;
+        for installed in installed_sets
+            .iter()
+            .flat_map(|patch_set| &patch_set.patches)
+        {
+            let installed_end = installed
+                .address
+                .checked_add(installed.size)
+                .ok_or(PatchError::AddressOverflow)?;
+            if patch.address < installed_end && installed.address < patch_end {
+                return Err(PatchError::OverlappingPatch {
+                    first: installed.address,
+                    second: patch.address,
+                });
+            }
         }
     }
 
-    // SAFETY: The pseudo-handle is valid in the current process.
-    let process = unsafe { GetCurrentProcess() };
-    for page in &executable_pages {
-        // SAFETY: Every page is a live executable mapping in this process.
-        unsafe { FlushInstructionCache(process, Some(page.as_ptr() as *const c_void), page.len()) }
+    Ok(())
+}
+
+impl PatchSession {
+    /// Seals this session's trampoline pages and installs every prepared patch.
+    ///
+    /// Installation is permanent: the source modifications and executable
+    /// trampoline allocations remain live until the process exits. A library
+    /// containing any callback or destination referenced by these patches must
+    /// therefore remain loaded for the same duration.
+    ///
+    /// # Safety
+    ///
+    /// No other thread may execute a patch source while its instructions are
+    /// being replaced. Every source range and prepared trampoline must still
+    /// satisfy the requirements documented by the corresponding patch
+    /// preparation operation.
+    pub unsafe fn install_permanently(self) -> Result<(), PatchError> {
+        let Self { pages, pending } = self;
+        let mut executable_pages = Vec::with_capacity(pages.len());
+        for page in pages {
+            match page.mapping.make_exec() {
+                Ok(mapping) => executable_pages.push(mapping),
+                Err((_mapping, error)) => return Err(PatchError::Mapping(error.to_string())),
+            }
+        }
+
+        // SAFETY: The pseudo-handle is valid in the current process.
+        let process = unsafe { GetCurrentProcess() };
+        for page in &executable_pages {
+            // SAFETY: Every page is a live executable mapping in this process.
+            unsafe {
+                FlushInstructionCache(process, Some(page.as_ptr() as *const c_void), page.len())
+            }
             .map_err(|error| PatchError::InstructionCache {
                 address: page.as_ptr() as usize,
                 error: error.to_string(),
             })?;
-    }
+        }
 
-    // SAFETY: The caller guarantees all prepared sources remain readable.
-    unsafe { validate_patch_sources(&session.pending)? };
-    // SAFETY: The caller guarantees the source ranges may be modified.
-    let protections = unsafe { protect_patch_sources(&session.pending)? };
-    // SAFETY: Revalidate after changing protections to narrow the race window.
-    if let Err(error) = unsafe { validate_patch_sources(&session.pending) } {
+        let mut installed_sets = permanent_patch_sets();
+        ensure_patches_do_not_overlap_installed(&installed_sets, &pending)?;
+
+        // SAFETY: The caller guarantees all prepared sources remain readable.
+        unsafe { validate_patch_sources(&pending)? };
+        // SAFETY: The caller guarantees the source ranges may be modified.
+        let protections = unsafe { protect_patch_sources(&pending)? };
+        // SAFETY: Revalidate after changing protections to narrow the race
+        // window.
+        if let Err(error) = unsafe { validate_patch_sources(&pending) } {
+            // SAFETY: `protections` records each changed source page.
+            unsafe { restore_patch_sources(&protections)? };
+            return Err(error);
+        }
+
+        let page_count = executable_pages.len();
+        let patch_count = pending.len();
+        installed_sets.push(PermanentPatchSet {
+            _pages: executable_pages,
+            patches: pending
+                .iter()
+                .map(|patch| InstalledPatch {
+                    address: patch.address,
+                    size: patch.replacement.len(),
+                })
+                .collect(),
+        });
+
+        for patch in &pending {
+            // SAFETY: Source protections are writable and the source range was
+            // validated immediately before this copy.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    patch.replacement.as_ptr(),
+                    patch.address as *mut u8,
+                    patch.replacement.len(),
+                );
+            }
+        }
+
+        let instruction_cache_result = pending.iter().try_for_each(|patch| {
+            // SAFETY: The replacement range is live executable memory in this
+            // process.
+            unsafe {
+                FlushInstructionCache(
+                    process,
+                    Some(patch.address as *const c_void),
+                    patch.replacement.len(),
+                )
+            }
+            .map_err(|error| PatchError::InstructionCache {
+                address: patch.address,
+                error: error.to_string(),
+            })
+        });
         // SAFETY: `protections` records each changed source page.
-        unsafe { restore_patch_sources(&protections)? };
-        return Err(error);
+        let protection_result = unsafe { restore_patch_sources(&protections) };
+        instruction_cache_result?;
+        protection_result?;
+
+        log::info!(
+            "Installed {patch_count} permanent patch(es) using {page_count} shared trampoline page(s)"
+        );
+        Ok(())
     }
-
-    let runtime = PatchRuntime {
-        pages: executable_pages,
-        patches: session.pending,
-    };
-    let page_count = runtime.pages.len();
-    let patch_count = runtime.patches.len();
-    manager.runtime = Some(runtime);
-
-    let runtime = manager
-        .runtime
-        .as_ref()
-        .ok_or(PatchError::InvalidManagerState(
-            "installed runtime disappeared",
-        ))?;
-    for patch in &runtime.patches {
-        // SAFETY: Source protections are writable and the source range was
-        // validated immediately before this copy.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                patch.replacement.as_ptr(),
-                patch.address as *mut u8,
-                patch.replacement.len(),
-            );
-        }
-    }
-
-    let instruction_cache_result = runtime.patches.iter().try_for_each(|patch| {
-        // SAFETY: The replacement range is live executable memory in this
-        // process.
-        unsafe {
-            FlushInstructionCache(
-                process,
-                Some(patch.address as *const c_void),
-                patch.replacement.len(),
-            )
-        }
-        .map_err(|error| PatchError::InstructionCache {
-            address: patch.address,
-            error: error.to_string(),
-        })
-    });
-    // SAFETY: `protections` records each changed source page.
-    let protection_result = unsafe { restore_patch_sources(&protections) };
-    instruction_cache_result?;
-    protection_result?;
-
-    log::info!("Installed {patch_count} patch(es) using {page_count} shared trampoline page(s)");
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Patch, ReturnType, relative_jump::NEAR_JUMP};
+    use crate::{ReturnType, relative_jump::NEAR_JUMP};
     use windows::Win32::System::Memory::{
-        MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc, VirtualFree,
+        MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc,
     };
 
     const DEAD_BEEF: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
@@ -471,22 +501,25 @@ mod tests {
 
             let first_address = test_memory as usize;
             let second_address = first_address + 32;
-            let first = Patch::patch_call(
-                first_address,
-                dummy as *const (),
-                10,
-                true,
-                ReturnType::None,
-            )
-            .unwrap();
-            let second = Patch::patch_call(
-                second_address,
-                dummy as *const (),
-                10,
-                true,
-                ReturnType::None,
-            )
-            .unwrap();
+            let mut session = PatchSession::new();
+            let first = session
+                .patch_call(
+                    first_address,
+                    dummy as *const (),
+                    10,
+                    true,
+                    ReturnType::None,
+                )
+                .unwrap();
+            let second = session
+                .patch_call(
+                    second_address,
+                    dummy as *const (),
+                    10,
+                    true,
+                    ReturnType::None,
+                )
+                .unwrap();
 
             let first_trampoline = first
                 .trampoline_address()
@@ -507,11 +540,10 @@ mod tests {
                 &DEAD_BEEF
             );
 
-            finalize_patches().unwrap();
+            session.install_permanently().unwrap();
 
             assert_eq!(*(first_address as *const u8), NEAR_JUMP);
             assert_eq!(*(second_address as *const u8), NEAR_JUMP);
-            VirtualFree(test_memory, 0, MEM_RELEASE).unwrap();
         }
     }
 }

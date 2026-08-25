@@ -7,9 +7,6 @@ pub enum PatchError {
     /// An address calculation overflowed.
     #[error("address calculation overflowed")]
     AddressOverflow,
-    /// The process-wide patch set has already been finalized.
-    #[error("patch installation has already been finalized")]
-    AlreadyFinalized,
     /// A patch contained no replacement bytes.
     #[error("a patch must overwrite at least one byte")]
     EmptyPatch,
@@ -27,12 +24,6 @@ pub enum PatchError {
     /// Executable memory could not be allocated or sealed.
     #[error("memory mapping failed: {0}")]
     Mapping(String),
-    /// The process-wide patch manager was left in an invalid state.
-    #[error("patch manager state is invalid: {0}")]
-    InvalidManagerState(&'static str),
-    /// Another thread panicked while holding the process-wide patch manager.
-    #[error("patch manager is unavailable because its lock was poisoned")]
-    ManagerPoisoned,
     /// A loaded process module could not be found.
     #[error("unable to find process module: {0}")]
     ModuleLookup(String),
