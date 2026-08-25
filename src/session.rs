@@ -489,6 +489,28 @@ mod tests {
     }
 
     #[test]
+    fn pending_patch_ranges_may_touch_but_not_overlap() {
+        let session = PatchSession {
+            pages: Vec::new(),
+            pending: vec![PendingPatch {
+                address: 0x1000,
+                expected: vec![0; 5],
+                replacement: vec![0; 5],
+            }],
+        };
+
+        assert!(session.ensure_patch_does_not_overlap(0x0fff, 1).is_ok());
+        assert!(session.ensure_patch_does_not_overlap(0x1005, 1).is_ok());
+        assert!(matches!(
+            session.ensure_patch_does_not_overlap(0x1004, 2),
+            Err(PatchError::OverlappingPatch {
+                first: 0x1000,
+                second: 0x1004,
+            })
+        ));
+    }
+
+    #[test]
     fn patch_calls_share_a_page_and_install_together() {
         unsafe {
             let size = 64;

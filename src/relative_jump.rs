@@ -171,6 +171,17 @@ mod tests {
     }
 
     #[test]
+    fn near_jump_is_encoded_and_padded_to_the_source_size() {
+        let source = 0x140001000;
+        let destination = 0x140002000;
+        let jump = build_near_jump(source, destination, 8).unwrap();
+
+        assert_eq!(jump[0], NEAR_JUMP);
+        assert_eq!(i32::from_le_bytes(jump[1..5].try_into().unwrap()), 0xffb);
+        assert_eq!(&jump[5..], &[0x90; 3]);
+    }
+
+    #[test]
     fn slots_are_aligned_and_do_not_overlap() {
         let first = slot_range(0, 135, 4096).unwrap();
         let second = slot_range(first.end, 129, 4096).unwrap();
