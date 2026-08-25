@@ -79,10 +79,11 @@ pub(crate) fn build_call(function: *const (), allow_return: ReturnType) -> Vec<u
     code
 }
 
-pub(crate) fn push_preserved_predicate_call(
+pub(crate) fn push_preserved_call_and_compare_al(
     code: &mut Vec<u8>,
     function: *const (),
     argument_setup: &[u8],
+    expected: u8,
 ) {
     // Preserve every volatile integer register, including RAX so the inline
     // hook does not leak the predicate's Boolean return value.
@@ -113,10 +114,10 @@ pub(crate) fn push_preserved_predicate_call(
     code.extend_from_slice(&CALL_BYTES);
     code.extend_from_slice(&(function as usize).to_le_bytes());
 
-    // Capture the predicate result before restoring RAX. None of the restore
-    // instructions below alter flags, so a conditional jump can consume the
-    // result after every volatile register has its original value.
-    code.extend_from_slice(&[0x84, 0xC0]); // TEST AL, AL
+    // Compare the result before restoring RAX. None of the restore instructions
+    // below alter flags, so a conditional jump can consume the comparison after
+    // every volatile register has its original value.
+    code.extend_from_slice(&[0x3C, expected]); // CMP AL, expected
     code.extend_from_slice(&[
         0xF3, 0x0F, 0x6F, 0x44, 0x24, 0x20, // MOVDQU XMM0, [RSP+0x20]
         0xF3, 0x0F, 0x6F, 0x4C, 0x24, 0x30, // MOVDQU XMM1, [RSP+0x30]

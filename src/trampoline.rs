@@ -1,4 +1,4 @@
-use crate::{PatchError, arch::push_preserved_predicate_call, relative_offset};
+use crate::{PatchError, arch::push_preserved_call_and_compare_al, relative_offset};
 
 /// An internal destination in a [`Trampoline`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,20 +111,31 @@ impl Trampoline {
         self
     }
 
-    /// Calls a Boolean predicate while preserving every volatile Windows-x64
-    /// register, then branches to `true_label` when it returns true.
+    /// Appends a six-byte near `JZ` to an internal label.
+    pub fn jump_if_zero(&mut self, label: Label) -> &mut Self {
+        self.code.extend_from_slice(&[0x0F, 0x84]);
+        self.push_relative_fixup(Target::Label(label));
+        self
+    }
+
+    /// Calls a function, compares its `AL` result with `expected`, and
+    /// preserves every volatile Windows-x64 register.
     ///
     /// `argument_setup` runs after volatile state is saved and immediately
     /// before the call. It may modify volatile registers to prepare callback
     /// arguments, but must not change `RSP` or non-volatile registers.
-    pub fn preserved_predicate_call(
+    ///
+    /// The comparison flags remain valid after register restoration, so this
+    /// should be followed immediately by a conditional jump such as
+    /// [`Self::jump_if_zero`] or [`Self::jump_if_not_zero`].
+    pub fn preserved_call_and_compare_al(
         &mut self,
         function: *const (),
         argument_setup: &[u8],
-        true_label: Label,
+        expected: u8,
     ) -> &mut Self {
-        push_preserved_predicate_call(&mut self.code, function, argument_setup);
-        self.jump_if_not_zero(true_label)
+        push_preserved_call_and_compare_al(&mut self.code, function, argument_setup, expected);
+        self
     }
 
     /// Applies every address-dependent fixup for an allocation at `address`.
@@ -203,11 +214,12 @@ mod tests {
     fn predicate_call_preserves_all_volatile_registers() {
         let mut trampoline = Trampoline::new();
         let returned_true = trampoline.new_label();
-        trampoline.preserved_predicate_call(
+        trampoline.preserved_call_and_compare_al(
             0x140001000usize as *const (),
             &[0x48, 0x89, 0xF9],
-            returned_true,
+            0,
         );
+        trampoline.jump_if_not_zero(returned_true);
         trampoline.bind(returned_true).unwrap();
 
         let code = trampoline.build(0x180000000).unwrap();
@@ -229,6 +241,20 @@ mod tests {
                 .any(|bytes| bytes == [0xF3, 0x0F, 0x6F, 0x6C, 0x24, 0x70])
         );
         assert!(code.windows(3).any(|bytes| bytes == [0x48, 0x89, 0xF9]));
+        assert!(code.windows(2).any(|bytes| bytes == [0x3C, 0x00]));
         assert!(code.ends_with(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]));
+    }
+
+    #[test]
+    fn call_comparison_can_branch_on_equality() {
+        let mut trampoline = Trampoline::new();
+        let returned_five = trampoline.new_label();
+        trampoline.preserved_call_and_compare_al(0x140001000usize as *const (), &[], 5);
+        trampoline.jump_if_zero(returned_five);
+        trampoline.bind(returned_five).unwrap();
+
+        let code = trampoline.build(0x180000000).unwrap();
+        assert!(code.windows(2).any(|bytes| bytes == [0x3C, 0x05]));
+        assert!(code.ends_with(&[0x0F, 0x84, 0x00, 0x00, 0x00, 0x00]));
     }
 }
