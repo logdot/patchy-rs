@@ -160,6 +160,11 @@ impl Trampoline {
     /// leave state in flags or memory, but has the same register restrictions
     /// as `argument_setup`.
     ///
+    /// Every control-flow path in both byte sequences must eventually fall
+    /// through to the following generated instruction with `RSP` unchanged.
+    /// Branching out of either sequence can bypass the call or register
+    /// restoration and leave the trampoline's stack frame corrupted.
+    ///
     /// `allow_return` selects a return register that remains available after
     /// this operation. [`ReturnType::None`] restores every volatile register.
     pub fn preserved_call(
