@@ -1,4 +1,4 @@
-use crate::{PatchError, arch::push_preserved_call_and_compare_al, relative_offset};
+use crate::{PatchError, ReturnType, arch::push_preserved_call, relative_offset};
 
 /// An internal destination in a [`Trampoline`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,23 +118,33 @@ impl Trampoline {
         self
     }
 
-    /// Calls a function, compares its `AL` result with `expected`, and
-    /// preserves every volatile Windows-x64 register.
+    /// Calls a function while preserving volatile Windows-x64 registers.
     ///
     /// `argument_setup` runs after volatile state is saved and immediately
     /// before the call. It may modify volatile registers to prepare callback
     /// arguments, but must not change `RSP` or non-volatile registers.
     ///
-    /// The comparison flags remain valid after register restoration, so this
-    /// should be followed immediately by a conditional jump such as
-    /// [`Self::jump_if_zero`] or [`Self::jump_if_not_zero`].
-    pub fn preserved_call_and_compare_al(
+    /// `result_handling` runs immediately after the call, before return
+    /// registers are restored. It may inspect or dereference return values and
+    /// leave state in flags or memory, but has the same register restrictions
+    /// as `argument_setup`.
+    ///
+    /// `allow_return` selects a return register that remains available after
+    /// this operation. [`ReturnType::None`] restores every volatile register.
+    pub fn preserved_call(
         &mut self,
         function: *const (),
         argument_setup: &[u8],
-        expected: u8,
+        result_handling: &[u8],
+        allow_return: ReturnType,
     ) -> &mut Self {
-        push_preserved_call_and_compare_al(&mut self.code, function, argument_setup, expected);
+        push_preserved_call(
+            &mut self.code,
+            function,
+            argument_setup,
+            result_handling,
+            allow_return,
+        );
         self
     }
 
@@ -214,10 +224,11 @@ mod tests {
     fn predicate_call_preserves_all_volatile_registers() {
         let mut trampoline = Trampoline::new();
         let returned_true = trampoline.new_label();
-        trampoline.preserved_call_and_compare_al(
+        trampoline.preserved_call(
             0x140001000usize as *const (),
             &[0x48, 0x89, 0xF9],
-            0,
+            &[0x84, 0xC0],
+            ReturnType::None,
         );
         trampoline.jump_if_not_zero(returned_true);
         trampoline.bind(returned_true).unwrap();
@@ -241,20 +252,34 @@ mod tests {
                 .any(|bytes| bytes == [0xF3, 0x0F, 0x6F, 0x6C, 0x24, 0x70])
         );
         assert!(code.windows(3).any(|bytes| bytes == [0x48, 0x89, 0xF9]));
-        assert!(code.windows(2).any(|bytes| bytes == [0x3C, 0x00]));
+        assert!(code.windows(2).any(|bytes| bytes == [0x84, 0xC0]));
         assert!(code.ends_with(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]));
     }
 
     #[test]
-    fn call_comparison_can_branch_on_equality() {
+    fn result_handling_can_compare_arbitrary_values() {
         let mut trampoline = Trampoline::new();
         let returned_five = trampoline.new_label();
-        trampoline.preserved_call_and_compare_al(0x140001000usize as *const (), &[], 5);
+        trampoline.preserved_call(
+            0x140001000usize as *const (),
+            &[],
+            &[0x3C, 0x05],
+            ReturnType::None,
+        );
         trampoline.jump_if_zero(returned_five);
         trampoline.bind(returned_five).unwrap();
 
         let code = trampoline.build(0x180000000).unwrap();
         assert!(code.windows(2).any(|bytes| bytes == [0x3C, 0x05]));
         assert!(code.ends_with(&[0x0F, 0x84, 0x00, 0x00, 0x00, 0x00]));
+    }
+
+    #[test]
+    fn selected_return_register_remains_available() {
+        let mut trampoline = Trampoline::new();
+        trampoline.preserved_call(0x140001000usize as *const (), &[], &[], ReturnType::Rax);
+
+        let code = trampoline.build(0x180000000).unwrap();
+        assert!(code.ends_with(&[0x48, 0x8D, 0x64, 0x24, 0x08]));
     }
 }

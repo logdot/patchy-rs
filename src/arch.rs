@@ -79,11 +79,12 @@ pub(crate) fn build_call(function: *const (), allow_return: ReturnType) -> Vec<u
     code
 }
 
-pub(crate) fn push_preserved_call_and_compare_al(
+pub(crate) fn push_preserved_call(
     code: &mut Vec<u8>,
     function: *const (),
     argument_setup: &[u8],
-    expected: u8,
+    result_handling: &[u8],
+    allow_return: ReturnType,
 ) {
     // Preserve every volatile integer register, including RAX so the inline
     // hook does not leak the predicate's Boolean return value.
@@ -114,12 +115,16 @@ pub(crate) fn push_preserved_call_and_compare_al(
     code.extend_from_slice(&CALL_BYTES);
     code.extend_from_slice(&(function as usize).to_le_bytes());
 
-    // Compare the result before restoring RAX. None of the restore instructions
-    // below alter flags, so a conditional jump can consume the comparison after
-    // every volatile register has its original value.
-    code.extend_from_slice(&[0x3C, expected]); // CMP AL, expected
+    // Result handling runs before return registers are restored, allowing it to
+    // inspect arbitrary values and leave a decision in flags or memory.
+    code.extend_from_slice(result_handling);
+
+    if allow_return != ReturnType::Xmm0 {
+        code.extend_from_slice(&[
+            0xF3, 0x0F, 0x6F, 0x44, 0x24, 0x20, // MOVDQU XMM0, [RSP+0x20]
+        ]);
+    }
     code.extend_from_slice(&[
-        0xF3, 0x0F, 0x6F, 0x44, 0x24, 0x20, // MOVDQU XMM0, [RSP+0x20]
         0xF3, 0x0F, 0x6F, 0x4C, 0x24, 0x30, // MOVDQU XMM1, [RSP+0x30]
         0xF3, 0x0F, 0x6F, 0x54, 0x24, 0x40, // MOVDQU XMM2, [RSP+0x40]
         0xF3, 0x0F, 0x6F, 0x5C, 0x24, 0x50, // MOVDQU XMM3, [RSP+0x50]
@@ -133,6 +138,11 @@ pub(crate) fn push_preserved_call_and_compare_al(
         0x41, 0x58, // POP R8
         0x5A, // POP RDX
         0x59, // POP RCX
-        0x58, // POP RAX
     ]);
+    if allow_return == ReturnType::Rax {
+        // Discard the saved RAX without altering flags or the callback result.
+        code.extend_from_slice(&[0x48, 0x8D, 0x64, 0x24, 0x08]); // LEA RSP, [RSP+8]
+    } else {
+        code.push(0x58); // POP RAX
+    }
 }
