@@ -30,7 +30,7 @@ if(NOT TARGET Patchy::ffi_static)
             IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/lib/patchy_ffi.lib"
             INTERFACE_COMPILE_DEFINITIONS PATCHY_STATIC
             INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include"
-            INTERFACE_LINK_LIBRARIES "advapi32;bcrypt;kernel32;ntdll;userenv;ws2_32"
+            INTERFACE_LINK_LIBRARIES "@PATCHY_STATIC_SYSTEM_LIBRARIES@"
     )
 endif()
 

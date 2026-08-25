@@ -31,6 +31,7 @@ set(
 )
 option(PATCHY_BUILD_EXAMPLE "Build the C++ injected-module example" OFF)
 option(PATCHY_EXAMPLE_LINK_STATIC "Link the C++ example to Patchy's static library" OFF)
+set(PATCHY_STATIC_SYSTEM_LIBRARIES advapi32 bcrypt kernel32 ntdll psapi userenv ws2_32)
 
 if(PATCHY_CARGO_PROFILE STREQUAL "release")
     set(_patchy_cargo_profile_arguments --release)
@@ -108,7 +109,7 @@ set_target_properties(
         IMPORTED_LOCATION "${_patchy_static_library}"
         INTERFACE_COMPILE_DEFINITIONS PATCHY_STATIC
         INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "advapi32;bcrypt;kernel32;ntdll;userenv;ws2_32"
+        INTERFACE_LINK_LIBRARIES "${PATCHY_STATIC_SYSTEM_LIBRARIES}"
 )
 add_dependencies(patchy_ffi_static patchy_cargo_build)
 add_library(Patchy::ffi_static ALIAS patchy_ffi_static)
