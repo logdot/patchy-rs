@@ -30,10 +30,11 @@ pub(crate) fn build_near_jump(
     Ok(patch)
 }
 
-pub(crate) fn relative_offset(
-    next_instruction: usize,
-    destination: usize,
-) -> Result<i32, PatchError> {
+/// Calculates a signed 32-bit relative displacement.
+///
+/// `next_instruction` is the address immediately after the instruction that
+/// will contain the displacement.
+pub fn relative_offset(next_instruction: usize, destination: usize) -> Result<i32, PatchError> {
     let displacement = destination as i128 - next_instruction as i128;
     i32::try_from(displacement).map_err(|_| PatchError::RelativeJumpOutOfRange {
         next_instruction,

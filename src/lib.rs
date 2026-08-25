@@ -17,6 +17,7 @@ mod session;
 
 pub use error::PatchError;
 pub use patch::Patch;
+pub use relative_jump::relative_offset;
 pub use session::finalize_patches;
 
 /// Selects which hook return register is allowed to replace the original value.
