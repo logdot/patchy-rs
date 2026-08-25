@@ -13,6 +13,9 @@ pub enum PatchError {
     /// A patch contained no replacement bytes.
     #[error("a patch must overwrite at least one byte")]
     EmptyPatch,
+    /// A detour contained no trampoline instructions.
+    #[error("a detour trampoline cannot be empty")]
+    EmptyTrampoline,
     /// Windows could not flush executable instructions from the CPU cache.
     #[error("unable to flush the instruction cache at {address:#x}: {error}")]
     InstructionCache {
@@ -24,6 +27,12 @@ pub enum PatchError {
     /// Executable memory could not be allocated or sealed.
     #[error("memory mapping failed: {0}")]
     Mapping(String),
+    /// The process-wide patch manager was left in an invalid state.
+    #[error("patch manager state is invalid: {0}")]
+    InvalidManagerState(&'static str),
+    /// Another thread panicked while holding the process-wide patch manager.
+    #[error("patch manager is unavailable because its lock was poisoned")]
+    ManagerPoisoned,
     /// A loaded process module could not be found.
     #[error("unable to find process module: {0}")]
     ModuleLookup(String),
@@ -40,6 +49,14 @@ pub enum PatchError {
         hook: usize,
         /// The final allocation error, when one was reported.
         last_error: Option<String>,
+    },
+    /// A patch source is too small for its replacement instruction.
+    #[error("patch requires at least {minimum} source bytes, but received {size}")]
+    PatchTooSmall {
+        /// The provided source size.
+        size: usize,
+        /// The minimum required source size.
+        minimum: usize,
     },
     /// Two prepared patches modify overlapping source bytes.
     #[error("patch at {second:#x} overlaps the patch prepared at {first:#x}")]

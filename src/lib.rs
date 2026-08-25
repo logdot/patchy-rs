@@ -24,6 +24,9 @@ pub use relative_jump::relative_offset;
 pub use session::finalize_patches;
 pub use trampoline::{Condition, Label, Trampoline};
 
+/// A result returned by Patchy operations.
+pub type Result<T = ()> = std::result::Result<T, PatchError>;
+
 /// Selects which hook return register is allowed to replace the original value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReturnType {

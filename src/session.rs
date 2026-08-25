@@ -66,11 +66,11 @@ impl PatchManager {
 
 static PATCH_MANAGER: OnceLock<Mutex<PatchManager>> = OnceLock::new();
 
-pub(crate) fn patch_manager() -> MutexGuard<'static, PatchManager> {
+pub(crate) fn patch_manager() -> Result<MutexGuard<'static, PatchManager>, PatchError> {
     PATCH_MANAGER
         .get_or_init(|| Mutex::new(PatchManager::new()))
         .lock()
-        .expect("patch manager mutex poisoned")
+        .map_err(|_| PatchError::ManagerPoisoned)
 }
 
 impl PatchSession {
@@ -358,7 +358,7 @@ unsafe fn validate_patch_sources(patches: &[PendingPatch]) -> Result<(), PatchEr
 /// replaced. Every source range and prepared trampoline must still satisfy the
 /// requirements documented by the corresponding [`crate::Patch`] operation.
 pub unsafe fn finalize_patches() -> Result<(), PatchError> {
-    let mut manager = patch_manager();
+    let mut manager = patch_manager()?;
     if manager.runtime.is_some() || manager.session.is_none() {
         return Err(PatchError::AlreadyFinalized);
     }
@@ -405,7 +405,9 @@ pub unsafe fn finalize_patches() -> Result<(), PatchError> {
     let runtime = manager
         .runtime
         .as_ref()
-        .expect("patch runtime disappeared during installation");
+        .ok_or(PatchError::InvalidManagerState(
+            "installed runtime disappeared",
+        ))?;
     for patch in &runtime.patches {
         // SAFETY: Source protections are writable and the source range was
         // validated immediately before this copy.
@@ -418,7 +420,7 @@ pub unsafe fn finalize_patches() -> Result<(), PatchError> {
         }
     }
 
-    for patch in &runtime.patches {
+    let instruction_cache_result = runtime.patches.iter().try_for_each(|patch| {
         // SAFETY: The replacement range is live executable memory in this
         // process.
         unsafe {
@@ -428,11 +430,15 @@ pub unsafe fn finalize_patches() -> Result<(), PatchError> {
                 patch.replacement.len(),
             )
         }
-        .expect("unable to flush the instruction cache after installing patches");
-    }
+        .map_err(|error| PatchError::InstructionCache {
+            address: patch.address,
+            error: error.to_string(),
+        })
+    });
     // SAFETY: `protections` records each changed source page.
-    unsafe { restore_patch_sources(&protections) }
-        .expect("unable to restore source page protections after installing patches");
+    let protection_result = unsafe { restore_patch_sources(&protections) };
+    instruction_cache_result?;
+    protection_result?;
 
     log::info!("Installed {patch_count} patch(es) using {page_count} shared trampoline page(s)");
     Ok(())
@@ -471,14 +477,16 @@ mod tests {
                 10,
                 true,
                 ReturnType::None,
-            );
+            )
+            .unwrap();
             let second = Patch::patch_call(
                 second_address,
                 dummy as *const (),
                 10,
                 true,
                 ReturnType::None,
-            );
+            )
+            .unwrap();
 
             let first_trampoline = first
                 .trampoline_address()
