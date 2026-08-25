@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Check all targets
+        run: cargo check --workspace --all-targets
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run workspace tests
+        run: cargo test --workspace --all-targets
+      - name: Configure source CMake build
+        run: cmake -S . -B build -DPATCHY_BUILD_EXAMPLE=ON
+      - name: Build C ABI libraries and dynamic C++ example
+        run: cmake --build build --config Release
+      - name: Install release package
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}\stage"
+      - name: Verify installed dynamic package
+        run: |
+          cmake -S examples/cpp -B consumer-dynamic -DCMAKE_PREFIX_PATH="${{ github.workspace }}\stage"
+          cmake --build consumer-dynamic --config Release
+      - name: Verify installed static package
+        run: |
+          cmake -S examples/cpp -B consumer-static -DCMAKE_PREFIX_PATH="${{ github.workspace }}\stage" -DPATCHY_EXAMPLE_LINK_STATIC=ON
+          cmake --build consumer-static --config Release
+      - name: Create release archive and checksum
+        shell: pwsh
+        run: |
+          $archive = "patchy-${{ github.ref_name }}-windows-x86_64.zip"
+          Compress-Archive -Path stage\* -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+          "$hash  $archive" | Set-Content -NoNewline "$archive.sha256"
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: patchy-${{ github.ref_name }}-windows-x86_64
+          path: |
+            patchy-${{ github.ref_name }}-windows-x86_64.zip
+            patchy-${{ github.ref_name }}-windows-x86_64.zip.sha256
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            patchy-${{ github.ref_name }}-windows-x86_64.zip
+            patchy-${{ github.ref_name }}-windows-x86_64.zip.sha256

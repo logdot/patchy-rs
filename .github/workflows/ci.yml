@@ -24,7 +24,17 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Run tests
         run: cargo test --workspace --all-targets
-      - name: Build C ABI libraries
-        run: cargo build --release -p patchy-ffi
-      - name: Compile C++ example
-        run: cl /nologo /std:c++17 /EHsc /Iinclude /c examples\cpp\install_overwrite.cpp
+      - name: Configure source CMake build
+        run: cmake -S . -B build -DPATCHY_BUILD_EXAMPLE=ON
+      - name: Build C ABI libraries and dynamic C++ example
+        run: cmake --build build --config Release
+      - name: Install CMake package
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}\stage"
+      - name: Configure installed dynamic package example
+        run: cmake -S examples/cpp -B consumer-dynamic -DCMAKE_PREFIX_PATH="${{ github.workspace }}\stage"
+      - name: Build installed dynamic package example
+        run: cmake --build consumer-dynamic --config Release
+      - name: Configure installed static package example
+        run: cmake -S examples/cpp -B consumer-static -DCMAKE_PREFIX_PATH="${{ github.workspace }}\stage" -DPATCHY_EXAMPLE_LINK_STATIC=ON
+      - name: Build installed static package example
+        run: cmake --build consumer-static --config Release
