@@ -19,6 +19,13 @@ Any module containing a callback or destination referenced by a patch must
 remain loaded for that duration. When using the dynamic C ABI library,
 `patchy_ffi.dll` must remain loaded as well.
 
+All mods in one process should share the same `patchy_ffi.dll` instance.
+Separately loaded or statically linked copies have independent permanent-patch
+registries and cannot detect overlaps with one another. Disjoint patches may
+work, but overlapping patches could corrupt each other's sources. A modloader
+should therefore provide one common Patchy dynamic library and keep it loaded
+until process exit.
+
 Patchy does not provide an uninstall operation because an injected module
 generally cannot prove that no thread is executing or will return through a
 patched source or trampoline.
