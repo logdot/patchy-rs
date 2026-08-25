@@ -22,7 +22,7 @@ pub use patch::Patch;
 pub use process_module::ProcessModule;
 pub use relative_jump::relative_offset;
 pub use session::finalize_patches;
-pub use trampoline::{Label, Trampoline};
+pub use trampoline::{Condition, Label, Trampoline};
 
 /// Selects which hook return register is allowed to replace the original value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

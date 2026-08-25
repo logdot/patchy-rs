@@ -4,6 +4,44 @@ use crate::{PatchError, ReturnType, arch::push_preserved_call, relative_offset};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Label(usize);
 
+/// An x86 condition used by a near conditional jump.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Condition {
+    /// Overflow flag set.
+    Overflow = 0x80,
+    /// Overflow flag clear.
+    NotOverflow = 0x81,
+    /// Unsigned below.
+    Below = 0x82,
+    /// Unsigned above or equal.
+    AboveOrEqual = 0x83,
+    /// Equal or zero.
+    Equal = 0x84,
+    /// Not equal or not zero.
+    NotEqual = 0x85,
+    /// Unsigned below or equal.
+    BelowOrEqual = 0x86,
+    /// Unsigned above.
+    Above = 0x87,
+    /// Sign flag set.
+    Sign = 0x88,
+    /// Sign flag clear.
+    NotSign = 0x89,
+    /// Parity flag set.
+    Parity = 0x8A,
+    /// Parity flag clear.
+    NotParity = 0x8B,
+    /// Signed less.
+    Less = 0x8C,
+    /// Signed greater or equal.
+    GreaterOrEqual = 0x8D,
+    /// Signed less or equal.
+    LessOrEqual = 0x8E,
+    /// Signed greater.
+    Greater = 0x8F,
+}
+
 #[derive(Clone, Copy)]
 enum Target {
     Address(usize),
@@ -104,16 +142,9 @@ impl Trampoline {
         self
     }
 
-    /// Appends a six-byte near `JNZ` to an internal label.
-    pub fn jump_if_not_zero(&mut self, label: Label) -> &mut Self {
-        self.code.extend_from_slice(&[0x0F, 0x85]);
-        self.push_relative_fixup(Target::Label(label));
-        self
-    }
-
-    /// Appends a six-byte near `JZ` to an internal label.
-    pub fn jump_if_zero(&mut self, label: Label) -> &mut Self {
-        self.code.extend_from_slice(&[0x0F, 0x84]);
+    /// Appends a six-byte near conditional jump to an internal label.
+    pub fn jump_if(&mut self, condition: Condition, label: Label) -> &mut Self {
+        self.code.extend_from_slice(&[0x0F, condition as u8]);
         self.push_relative_fixup(Target::Label(label));
         self
     }
@@ -195,7 +226,7 @@ mod tests {
     fn internal_and_external_jumps_are_fixed_up() {
         let mut trampoline = Trampoline::new();
         let destination = trampoline.new_label();
-        trampoline.jump_if_not_zero(destination);
+        trampoline.jump_if(Condition::NotEqual, destination);
         trampoline.bytes(&[0x90; 3]);
         trampoline.bind(destination).unwrap();
         trampoline.relative_jump(0x180001000);
@@ -230,7 +261,7 @@ mod tests {
             &[0x84, 0xC0],
             ReturnType::None,
         );
-        trampoline.jump_if_not_zero(returned_true);
+        trampoline.jump_if(Condition::NotEqual, returned_true);
         trampoline.bind(returned_true).unwrap();
 
         let code = trampoline.build(0x180000000).unwrap();
@@ -266,7 +297,7 @@ mod tests {
             &[0x3C, 0x05],
             ReturnType::None,
         );
-        trampoline.jump_if_zero(returned_five);
+        trampoline.jump_if(Condition::Equal, returned_five);
         trampoline.bind(returned_five).unwrap();
 
         let code = trampoline.build(0x180000000).unwrap();
