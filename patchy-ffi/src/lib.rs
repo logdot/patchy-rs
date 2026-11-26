@@ -339,7 +339,7 @@ unsafe fn patch_call_v1(
     // SAFETY: The caller guarantees that the source range is readable and
     // that the replay and callback are valid at the patch site.
     unsafe {
-        session.detour_trampoline_with(address, size, |site| {
+        session.detour_trampoline(address, size, |site| {
             let mut trampoline = Trampoline::new();
             site.replay_verbatim(&mut trampoline);
             trampoline.call(bridge);
@@ -455,11 +455,14 @@ pub unsafe extern "C" fn patchy_session_detour_trampoline(
         let session = unsafe { require_session(session)? };
         // SAFETY: The trampoline pointer is valid by contract.
         let trampoline = unsafe { require_trampoline(trampoline)? };
+        if trampoline.inner.is_empty() {
+            return Err(PatchError::EmptyTrampoline.into());
+        }
         // SAFETY: The caller is responsible for the source and generated code.
         let patch = unsafe {
             session
                 .inner
-                .detour_trampoline(address, size, trampoline.inner.clone())?
+                .detour_trampoline(address, size, |_| Ok(trampoline.inner.clone()))?
         };
         if !output_trampoline.is_null() {
             // SAFETY: A non-null optional output is writable by contract.
