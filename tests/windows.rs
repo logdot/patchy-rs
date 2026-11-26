@@ -1,6 +1,9 @@
 use std::{ffi::c_void, mem, ptr};
 
-use patchy::{CallBridge, FlagPolicy, KeepReturn, PatchError, PatchSession, StackAlignment};
+use patchy::{
+    CallBridge, Condition, FlagPolicy, KeepReturn, PatchError, PatchSession, StackAlignment,
+    Trampoline,
+};
 use windows::Win32::System::{
     Diagnostics::Debug::FlushInstructionCache,
     Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc},
@@ -55,6 +58,125 @@ unsafe fn call_u32(address: usize) -> u32 {
     let function: unsafe extern "C" fn() -> u32 = unsafe { mem::transmute(address) };
     // SAFETY: The generated function uses the declared signature.
     unsafe { function() }
+}
+
+const REPLAY_BYTES: [u8; 5] = [0x83, 0xc0, 0x02, 0x66, 0x90]; // ADD EAX, 2; NOP
+
+extern "C" fn times_ten(value: u32) -> u32 {
+    value.wrapping_mul(10)
+}
+
+fn run_replay_hook(replay_first: bool) -> u32 {
+    // SAFETY: Only this test uses the private page. The subject sets EAX to 1,
+    // adds 2 at the hook site, then adds 1 at the continuation and returns.
+    unsafe {
+        let subject = allocate_test_page();
+        write_code(subject, &[0xb8, 1, 0, 0, 0]); // MOV EAX, 1
+        let address = subject + 5;
+        write_code(address, &REPLAY_BYTES);
+        write_code(address + REPLAY_BYTES.len(), &[0x83, 0xc0, 0x01, 0xc3]);
+
+        let mut session = PatchSession::new();
+        session
+            .detour_trampoline_with(address, REPLAY_BYTES.len(), |site| {
+                let mut code = Trampoline::new();
+                if replay_first {
+                    site.replay_verbatim(&mut code);
+                }
+                code.call(CallBridge {
+                    callback: times_ten as *const (),
+                    incoming_stack: StackAlignment::Offset8,
+                    flags: FlagPolicy::Preserve,
+                    keep_return: KeepReturn::Rax,
+                    before_call: &[0x89, 0xc1], // MOV ECX, EAX
+                    after_call: &[],
+                });
+                if !replay_first {
+                    site.replay_verbatim(&mut code);
+                }
+                site.resume(&mut code);
+                Ok(code)
+            })
+            .unwrap();
+        session.install_permanently().unwrap();
+        call_u32(subject)
+    }
+}
+
+#[test]
+fn replay_before_call_changes_the_callback_argument() {
+    assert_eq!(run_replay_hook(true), 31);
+}
+
+#[test]
+fn replay_after_call_changes_the_callback_result() {
+    assert_eq!(run_replay_hook(false), 13);
+}
+
+#[test]
+fn a_callback_predicate_can_skip_replay() {
+    // SAFETY: The private subject is equivalent to a Windows x64 function
+    // taking a u32 in ECX. The detour preserves the entry stack and callback ABI.
+    unsafe {
+        let subject = allocate_test_page();
+        write_code(subject, &[0x89, 0xc8]); // MOV EAX, ECX
+        let address = subject + 2;
+        write_code(address, &REPLAY_BYTES);
+        write_code(address + REPLAY_BYTES.len(), &[0x83, 0xc0, 0x01, 0xc3]);
+
+        let mut session = PatchSession::new();
+        session
+            .detour_trampoline_with(address, REPLAY_BYTES.len(), |site| {
+                let mut code = Trampoline::new();
+                let skip = code.new_label();
+                code.call(CallBridge {
+                    callback: times_ten as *const (),
+                    incoming_stack: StackAlignment::Offset8,
+                    flags: FlagPolicy::KeepProduced,
+                    keep_return: KeepReturn::Neither,
+                    before_call: &[],
+                    after_call: &[0x84, 0xc0], // TEST AL, AL
+                });
+                code.jump_if(Condition::NotEqual, skip);
+                site.replay_verbatim(&mut code);
+                code.bind(skip)?;
+                site.resume(&mut code);
+                Ok(code)
+            })
+            .unwrap();
+        session.install_permanently().unwrap();
+        let function: unsafe extern "C" fn(u32) -> u32 = mem::transmute(subject);
+        assert_eq!(function(0), 3);
+        assert_eq!(function(7), 8);
+    }
+}
+
+#[test]
+fn replay_uses_the_snapshot_validated_during_installation() {
+    // SAFETY: The private page is readable and no thread executes from it.
+    unsafe {
+        let address = allocate_test_page();
+        write_code(address, &RETURN_ONE);
+        let mut session = PatchSession::new();
+        let patch = session
+            .detour_trampoline_with(address, REPLAY_BYTES.len(), |site| {
+                write_code(address, &RETURN_TWO);
+                let mut code = Trampoline::new();
+                site.replay_verbatim(&mut code);
+                site.resume(&mut code);
+                Ok(code)
+            })
+            .unwrap();
+        let replayed = std::slice::from_raw_parts(
+            patch.trampoline_address().unwrap() as *const u8,
+            REPLAY_BYTES.len(),
+        );
+        assert_eq!(replayed, &RETURN_ONE[..REPLAY_BYTES.len()]);
+        assert!(matches!(
+            session.install_permanently(),
+            Err(PatchError::SourceChanged { address: changed }) if changed == address
+        ));
+    }
 }
 
 /// Register state exchanged with the generated subject function. Offsets are

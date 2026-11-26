@@ -312,10 +312,9 @@ pub unsafe extern "C" fn patchy_session_overwrite(
 
 /// Builds the C ABI v1 `patch_call` trampoline from the shared call bridge.
 ///
-/// Replaying the overwritten instructions ahead of the call exists only for
-/// ABI v1; its replacement is tracked separately (fq2n). Version 1 assumed a
-/// 16-byte aligned stack and never promised anything about flags, so the
-/// bridge restores them.
+/// ABI v1 replays the overwritten instructions ahead of the call when asked.
+/// It assumes a 16-byte aligned stack at the call bridge and does not expose
+/// a flag policy, so the bridge restores flags.
 unsafe fn patch_call_v1(
     session: &mut PatchSession,
     address: usize,
@@ -341,27 +340,15 @@ unsafe fn patch_call_v1(
         return unsafe { session.patch_call(address, size, bridge) };
     }
 
-    let resume = address
-        .checked_add(size)
-        .ok_or(PatchError::AddressOverflow)?;
-    let trampoline = move |overwritten: &[u8]| {
-        let mut trampoline = Trampoline::new();
-        trampoline.bytes(overwritten);
-        // SAFETY: The caller satisfies the bridge requirements at `address`.
-        unsafe { trampoline.call(bridge) }.relative_jump(resume);
-        trampoline
-    };
-    let trampoline_size = trampoline(&[])
-        .len()
-        .checked_add(size)
-        .ok_or(PatchError::AddressOverflow)?;
     // SAFETY: The caller guarantees that the source range is readable and
-    // that the replay and callback are valid at the patch site. `detour_with`
-    // rejects ranges that are too small before the closure can run.
+    // that the replay and callback are valid at the patch site.
     unsafe {
-        session.detour_with(address, size, trampoline_size, move |trampoline_address| {
-            let overwritten = slice::from_raw_parts(address as *const u8, size);
-            trampoline(overwritten).build(trampoline_address)
+        session.detour_trampoline_with(address, size, |site| {
+            let mut trampoline = Trampoline::new();
+            site.replay_verbatim(&mut trampoline);
+            trampoline.call(bridge);
+            site.resume(&mut trampoline);
+            Ok(trampoline)
         })
     }
 }
@@ -372,8 +359,11 @@ unsafe fn patch_call_v1(
 ///
 /// # Safety
 ///
-/// The session, source address, callback address, and callback ABI must satisfy
-/// `PatchSession::patch_call`.
+/// The session must be live, the source span must be a valid detour site, and
+/// the callback must use the Windows x64 ABI without stack-passed arguments.
+/// `RSP` must be 16-byte aligned at the bridge entry. If replay is enabled,
+/// the source instructions must be valid when copied verbatim, and the bridge
+/// entry alignment applies after they execute.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn patchy_session_patch_call(
     session: *mut PatchySession,
@@ -813,6 +803,60 @@ pub unsafe extern "C" fn patchy_trampoline_preserved_call(
 mod tests {
     use super::*;
     use std::{ffi::CStr, ptr};
+    use windows::Win32::System::{
+        Diagnostics::Debug::FlushInstructionCache,
+        Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc},
+        Threading::GetCurrentProcess,
+    };
+
+    #[test]
+    fn v1_patch_call_replays_before_the_callback() {
+        extern "C" fn double(value: u32) -> u32 {
+            value.wrapping_mul(2)
+        }
+
+        let subject: [u8; 16] = [
+            0x48, 0x83, 0xec, 8, // SUB RSP, 8
+            0x31, 0xc9, // XOR ECX, ECX
+            0xb9, 7, 0, 0, 0, // MOV ECX, 7 (displaced)
+            0x48, 0x83, 0xc4, 8,    // ADD RSP, 8
+            0xc3, // RET
+        ];
+        // SAFETY: The private page and callback remain live. The subject has
+        // the declared ABI, and the replayed move leaves RSP aligned.
+        unsafe {
+            let page = VirtualAlloc(
+                None,
+                subject.len(),
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_EXECUTE_READWRITE,
+            );
+            assert!(!page.is_null());
+            ptr::copy_nonoverlapping(subject.as_ptr(), page.cast(), subject.len());
+            FlushInstructionCache(GetCurrentProcess(), Some(page), subject.len()).unwrap();
+
+            let mut session = ptr::null_mut();
+            assert_eq!(patchy_session_create(&mut session), PatchyStatus::Ok);
+            assert_eq!(
+                patchy_session_patch_call(
+                    session,
+                    page as usize + 6,
+                    double as *const () as usize,
+                    5,
+                    1, // replay_overwritten
+                    1, // PATCHY_RETURN_RAX
+                    ptr::null_mut(),
+                ),
+                PatchyStatus::Ok
+            );
+            assert_eq!(
+                patchy_session_install_permanently(&mut session),
+                PatchyStatus::Ok
+            );
+            let function: unsafe extern "C" fn() -> u32 = std::mem::transmute(page);
+            assert_eq!(function(), 14);
+        }
+    }
 
     #[test]
     fn creates_and_destroys_opaque_builders() {
