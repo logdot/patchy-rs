@@ -14,10 +14,8 @@ use windows::Win32::System::{
 
 use crate::{
     PatchError,
-    relative_jump::{
-        CandidateAddresses, NEAR_JUMP_SIZE, align_down, candidate_bounds, relative_offset,
-        slot_range,
-    },
+    relative_jump::{CandidateAddresses, NEAR_JUMP_SIZE, align_down, candidate_bounds, slot_range},
+    relative_offset,
 };
 
 /// A batch of runtime patches being prepared for permanent installation.

@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::PatchError;
+use crate::{PatchError, relative_offset};
 
 pub(crate) const NEAR_JUMP: u8 = 0xe9;
 pub(crate) const NEAR_JUMP_SIZE: usize = 5;
@@ -28,18 +28,6 @@ pub(crate) fn build_near_jump(
     patch.extend_from_slice(&displacement.to_le_bytes());
     patch.resize(size, 0x90);
     Ok(patch)
-}
-
-/// Calculates a signed 32-bit relative displacement.
-///
-/// `next_instruction` is the address immediately after the instruction that
-/// will contain the displacement.
-pub fn relative_offset(next_instruction: usize, destination: usize) -> Result<i32, PatchError> {
-    let displacement = destination as i128 - next_instruction as i128;
-    i32::try_from(displacement).map_err(|_| PatchError::RelativeJumpOutOfRange {
-        next_instruction,
-        destination,
-    })
 }
 
 pub(crate) fn slot_range(used: usize, size: usize, capacity: usize) -> Option<Range<usize>> {
