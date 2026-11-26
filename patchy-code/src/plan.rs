@@ -60,10 +60,11 @@ impl TrampolinePlan {
     /// Checks that each replay slot can hold this detour's complete source span.
     pub fn validate_replay_size(&self, source_size: usize) -> Result<(), PatchError> {
         for &fixup in &self.fixups {
-            if let TrampolineFixup::Replay { offset, size } = fixup {
-                if size != source_size {
+            match fixup {
+                TrampolineFixup::Replay { offset, size } if size != source_size => {
                     return Err(replay_size_mismatch(offset, size, source_size));
                 }
+                _ => {}
             }
         }
         Ok(())
