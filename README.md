@@ -50,6 +50,51 @@ span with a bridge, or `Trampoline::call` to place one inside a larger
 trampoline. The `CallBridge` documentation lists the registers saved and the
 requirements on its `before_call` and `after_call` bytes.
 
+To assemble `before_call` or `after_call` machine code in your mod, opt into
+`iced-x86`'s `code_asm` feature in your own `Cargo.toml` (the `CallBridge` API
+is newer than the `v0.2.0` example above, so target a revision that includes
+it):
+
+```toml
+[dependencies]
+patchy = { package = "patchy-rs", git = "https://github.com/logdot/patchy-rs.git" }
+iced-x86 = { version = "1.21", features = ["code_asm"] }
+```
+
+Use `CodeAssembler` directly and pass the assembled bytes to `CallBridge`:
+
+```rust
+use iced_x86::code_asm::{CodeAssembler, rcx, rdx};
+use patchy::{CallBridge, FlagPolicy, KeepReturn, StackAlignment};
+
+extern "win64" fn on_hit(_value: u64) {}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut asm = CodeAssembler::new(64)?;
+    asm.mov(rcx, rdx)?;
+    let before_call = asm.assemble(0)?;
+
+    let _bridge = CallBridge {
+        callback: on_hit as *const (),
+        incoming_stack: StackAlignment::Aligned16,
+        flags: FlagPolicy::Preserve,
+        keep_return: KeepReturn::Neither,
+        before_call: &before_call,
+        after_call: &[],
+    };
+
+    Ok(())
+}
+```
+
+Passing `0` to `assemble(0)` is valid for a position-independent instruction
+such as `mov rcx, rdx`, because register-to-register moves encode no
+instruction-pointer-relative offset and produce the same bytes at any address.
+Address-dependent instructions (such as `RIP`-relative operands or relative
+branches) depend on their runtime address and must be assembled at their actual
+placement; `CallBridge` copies `before_call` and `after_call` verbatim without
+relocating them, so those slices must remain position-independent.
+
 ## C and C++
 
 Build the C ABI library with:
