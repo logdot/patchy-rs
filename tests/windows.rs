@@ -1,8 +1,8 @@
 use std::{ffi::c_void, mem, ptr};
 
 use patchy::{
-    CallBridge, Condition, FlagPolicy, KeepReturn, PatchError, PatchSession, StackAlignment,
-    Trampoline,
+    CallBridge, Condition, DetourSite, FlagPolicy, KeepReturn, PatchError, PatchSession,
+    StackAlignment, Trampoline, TrampolinePlan,
 };
 use windows::Win32::System::{
     Diagnostics::Debug::FlushInstructionCache,
@@ -111,6 +111,34 @@ fn replay_before_call_changes_the_callback_argument() {
 #[test]
 fn replay_after_call_changes_the_callback_result() {
     assert_eq!(run_replay_hook(false), 13);
+}
+
+#[test]
+fn a_reconstructed_plan_replays_the_installer_owned_source() {
+    let site = DetourSite::new(5);
+    let mut code = Trampoline::new();
+    // SAFETY: The overwritten instruction at each site is position-independent.
+    unsafe { site.replay_verbatim(&mut code) };
+    site.resume(&mut code);
+    let plan = code.into_plan().unwrap();
+    let (template, fixups) = plan.parts();
+
+    // SAFETY: Both private sources contain `MOV EAX, imm32; RET`, their
+    // memory stays live, and no other thread executes them.
+    unsafe {
+        let first = allocate_test_page();
+        let second = first + 32;
+        write_code(first, &RETURN_ONE);
+        write_code(second, &RETURN_TWO);
+        let mut session = PatchSession::new();
+        for address in [first, second] {
+            let reconstructed = TrampolinePlan::new(template.to_vec(), fixups.to_vec()).unwrap();
+            session.detour_plan(address, 5, reconstructed).unwrap();
+        }
+        session.install_permanently().unwrap();
+        assert_eq!(call_u32(first), 1);
+        assert_eq!(call_u32(second), 2);
+    }
 }
 
 #[test]

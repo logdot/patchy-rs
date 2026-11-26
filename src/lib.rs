@@ -9,32 +9,18 @@
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 compile_error!("patchy currently supports only 64-bit Windows targets");
 
-mod bridge;
-mod error;
 mod patch;
 mod process_module;
 mod relative_jump;
 mod session;
-mod trampoline;
 
-pub use bridge::{CallBridge, FlagPolicy, KeepReturn, StackAlignment};
-pub use error::PatchError;
-pub use patch::{DetourSite, Patch};
+pub use patch::Patch;
+pub use patchy_code::{
+    CallBridge, Condition, DetourSite, FlagPolicy, KeepReturn, Label, PatchError, ReturnType,
+    StackAlignment, Trampoline, TrampolineFixup, TrampolinePlan, relative_offset,
+};
 pub use process_module::ProcessModule;
-pub use relative_jump::relative_offset;
 pub use session::PatchSession;
-pub use trampoline::{Condition, Label, Trampoline};
 
 /// A result returned by Patchy operations.
 pub type Result<T = ()> = std::result::Result<T, PatchError>;
-
-/// Selects which hook return register is allowed to replace the original value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReturnType {
-    /// Preserve both `RAX` and `XMM0`.
-    None,
-    /// Keep the hook's result in `RAX`.
-    Rax,
-    /// Keep the hook's result in `XMM0`.
-    Xmm0,
-}

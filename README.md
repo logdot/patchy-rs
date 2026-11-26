@@ -103,6 +103,12 @@ same bytes that Patchy checks during installation. It does not relocate
 instructions: only replay complete instructions that still work at the new
 address and at that point in the trampoline.
 
+The `patchy-code` workspace package provides the same Rust trampoline builder
+without linking the process patcher. A builder can produce a `TrampolinePlan`
+containing code bytes and placement fixups. An installer can then apply the
+plan with `PatchSession::detour_plan`, which still owns source capture and
+resolves replay and resume against the recorded site.
+
 ## C and C++
 
 Build the C ABI library with:

@@ -1,7 +1,7 @@
 use core::slice;
 
 use crate::{
-    CallBridge, PatchError, Trampoline,
+    CallBridge, DetourSite, PatchError, Trampoline, TrampolinePlan,
     relative_jump::{NEAR_JUMP_SIZE, build_near_jump},
     session::{PatchSession, PendingPatch},
 };
@@ -17,38 +17,6 @@ pub struct Patch {
 #[derive(Clone, Copy)]
 struct CodeAllocation {
     address: usize,
-}
-
-/// The captured source span of a detour being prepared.
-///
-/// Use this in [`PatchSession::detour_trampoline_with`] to place replay and
-/// continuation jumps without rereading the source or calculating its end.
-pub struct DetourSite<'a> {
-    overwritten: &'a [u8],
-    continuation: usize,
-}
-
-impl DetourSite<'_> {
-    /// Appends the captured source instructions at the current position.
-    ///
-    /// These are the same bytes checked during installation. Patchy copies
-    /// them without decoding or relocating them.
-    ///
-    /// # Safety
-    ///
-    /// The captured span must contain only whole instructions. The caller must
-    /// ensure that they execute correctly at the trampoline's new address and
-    /// with the machine state at this point in its control flow. In particular,
-    /// a relative branch, call, or RIP-relative operand that targets something
-    /// outside the copied span generally cannot be replayed verbatim.
-    pub unsafe fn replay_verbatim(&self, trampoline: &mut Trampoline) {
-        trampoline.bytes(self.overwritten);
-    }
-
-    /// Appends a jump to the first byte after the overwritten span.
-    pub fn resume(&self, trampoline: &mut Trampoline) {
-        trampoline.relative_jump(self.continuation);
-    }
 }
 
 impl PatchSession {
@@ -149,28 +117,53 @@ impl PatchSession {
         build: F,
     ) -> Result<Patch, PatchError>
     where
-        F: FnOnce(DetourSite<'_>) -> Result<Trampoline, PatchError>,
+        F: FnOnce(DetourSite) -> Result<Trampoline, PatchError>,
     {
         let continuation = detour_end(address, size)?;
         // SAFETY: The caller guarantees a readable source range.
         let overwritten = unsafe { slice::from_raw_parts(address as *const u8, size) }.to_vec();
-        let trampoline = build(DetourSite {
-            overwritten: &overwritten,
-            continuation,
-        })?;
-        let trampoline_size = trampoline.len();
-        if trampoline_size == 0 {
-            return Err(PatchError::EmptyTrampoline);
-        }
+        let plan = build(DetourSite::new(size))?.into_plan()?;
+        validate_plan(&plan, size)?;
+        // SAFETY: The caller is responsible for the source span and code.
+        unsafe { self.prepare_plan(address, overwritten, continuation, plan) }
+    }
 
+    /// Prepares a compiled trampoline plan, resolving replay and continuation
+    /// against a single snapshot of this detour site.
+    ///
+    /// # Safety
+    /// The source and supplied code must satisfy [`Self::detour_trampoline_with`].
+    pub unsafe fn detour_plan(
+        &mut self,
+        address: usize,
+        size: usize,
+        plan: TrampolinePlan,
+    ) -> Result<Patch, PatchError> {
+        let continuation = detour_end(address, size)?;
+        validate_plan(&plan, size)?;
+        // SAFETY: The caller guarantees a readable source range.
+        let overwritten = unsafe { slice::from_raw_parts(address as *const u8, size) }.to_vec();
+        // SAFETY: The caller guarantees that the supplied machine code is valid.
+        unsafe { self.prepare_plan(address, overwritten, continuation, plan) }
+    }
+
+    unsafe fn prepare_plan(
+        &mut self,
+        address: usize,
+        overwritten: Vec<u8>,
+        continuation: usize,
+        plan: TrampolinePlan,
+    ) -> Result<Patch, PatchError> {
         // SAFETY: The caller provides the validity guarantees documented by
         // this method.
         unsafe {
             self.prepare_detour(
                 address,
                 overwritten,
-                trampoline_size,
-                |trampoline_address| trampoline.build(trampoline_address),
+                plan.parts().0.len(),
+                |trampoline_address, captured| {
+                    plan.build_for_site(trampoline_address, captured, continuation)
+                },
             )
         }
     }
@@ -204,7 +197,7 @@ impl PatchSession {
         let overwritten = unsafe { slice::from_raw_parts(address as *const u8, size) }.to_vec();
         // SAFETY: The caller provides the validity guarantees documented by
         // this method.
-        unsafe { self.prepare_detour(address, overwritten, trampoline_size, build) }
+        unsafe { self.prepare_detour(address, overwritten, trampoline_size, |at, _| build(at)) }
     }
 
     unsafe fn prepare_detour<F>(
@@ -215,11 +208,12 @@ impl PatchSession {
         build: F,
     ) -> Result<Patch, PatchError>
     where
-        F: Fn(usize) -> Result<Vec<u8>, PatchError>,
+        F: Fn(usize, &[u8]) -> Result<Vec<u8>, PatchError>,
     {
         self.ensure_patch_does_not_overlap(address, overwritten.len())?;
 
-        let trampoline_address = self.allocate_trampoline(address, trampoline_size, &build)?;
+        let trampoline_address =
+            self.allocate_trampoline(address, trampoline_size, &|at| build(at, &overwritten))?;
         let replacement = build_near_jump(address, trampoline_address, overwritten.len())?;
 
         self.pending.push(PendingPatch {
@@ -261,6 +255,13 @@ impl PatchSession {
     }
 }
 
+fn validate_plan(plan: &TrampolinePlan, source_size: usize) -> Result<(), PatchError> {
+    if plan.parts().0.is_empty() {
+        return Err(PatchError::EmptyTrampoline);
+    }
+    plan.validate_replay_size(source_size)
+}
+
 fn detour_end(address: usize, size: usize) -> Result<usize, PatchError> {
     if size < NEAR_JUMP_SIZE {
         return Err(PatchError::PatchTooSmall {
@@ -281,7 +282,38 @@ impl Patch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FlagPolicy, KeepReturn, StackAlignment};
+    use crate::{FlagPolicy, KeepReturn, StackAlignment, TrampolineFixup};
+
+    #[test]
+    fn a_transported_plan_rejects_a_mismatched_replay_span() {
+        let source = [0x90u8; 5];
+        let plan = TrampolinePlan::new(
+            vec![0; 6],
+            vec![TrampolineFixup::Replay { offset: 0, size: 6 }],
+        )
+        .unwrap();
+        let result = unsafe {
+            PatchSession::new().detour_plan(source.as_ptr() as usize, source.len(), plan)
+        };
+        assert!(matches!(
+            result,
+            Err(PatchError::ReplaySizeMismatch {
+                offset: 0,
+                reserved: 6,
+                source_size: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn a_transported_plan_rejects_an_empty_template() {
+        let source = [0x90u8; 5];
+        let plan = TrampolinePlan::new(vec![], vec![]).unwrap();
+        let result = unsafe {
+            PatchSession::new().detour_plan(source.as_ptr() as usize, source.len(), plan)
+        };
+        assert!(matches!(result, Err(PatchError::EmptyTrampoline)));
+    }
 
     #[test]
     fn invalid_patch_inputs_return_errors() {

@@ -58,6 +58,7 @@ file(
     _patchy_rust_sources
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.rs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/patchy-code/src/*.rs"
     "${CMAKE_CURRENT_SOURCE_DIR}/patchy-ffi/src/*.rs"
 )
 
@@ -76,6 +77,7 @@ add_custom_command(
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
+        "${CMAKE_CURRENT_SOURCE_DIR}/patchy-code/Cargo.toml"
         "${CMAKE_CURRENT_SOURCE_DIR}/patchy-ffi/Cargo.toml"
         ${_patchy_rust_sources}
     COMMENT "Building Patchy C ABI libraries with Cargo"
