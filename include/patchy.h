@@ -99,6 +99,9 @@ PATCHY_API patchy_status patchy_session_overwrite(
  * output_trampoline may be NULL. replay_overwritten must be zero or one.
  * function must use the Windows x64 ABI expected at the patch site.
  * The callback must not take stack-passed arguments.
+ * RSP must be 16-byte aligned when the bridge starts. If replay is enabled,
+ * the source span must contain whole instructions that execute correctly
+ * when copied verbatim, and RSP must be aligned after those instructions.
  */
 PATCHY_API patchy_status patchy_session_patch_call(
     patchy_session *session,

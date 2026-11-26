@@ -19,7 +19,7 @@ mod trampoline;
 
 pub use bridge::{CallBridge, FlagPolicy, KeepReturn, StackAlignment};
 pub use error::PatchError;
-pub use patch::Patch;
+pub use patch::{DetourSite, Patch};
 pub use process_module::ProcessModule;
 pub use relative_jump::relative_offset;
 pub use session::PatchSession;
