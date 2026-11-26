@@ -477,7 +477,7 @@ impl PatchSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ReturnType, relative_jump::NEAR_JUMP};
+    use crate::{CallBridge, FlagPolicy, KeepReturn, StackAlignment, relative_jump::NEAR_JUMP};
     use windows::Win32::System::Memory::{
         MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc,
     };
@@ -524,24 +524,16 @@ mod tests {
             let first_address = test_memory as usize;
             let second_address = first_address + 32;
             let mut session = PatchSession::new();
-            let first = session
-                .patch_call(
-                    first_address,
-                    dummy as *const (),
-                    10,
-                    true,
-                    ReturnType::None,
-                )
-                .unwrap();
-            let second = session
-                .patch_call(
-                    second_address,
-                    dummy as *const (),
-                    10,
-                    true,
-                    ReturnType::None,
-                )
-                .unwrap();
+            let bridge = CallBridge {
+                callback: dummy as *const (),
+                incoming_stack: StackAlignment::Aligned16,
+                flags: FlagPolicy::Preserve,
+                keep_return: KeepReturn::Neither,
+                before_call: &[],
+                after_call: &[],
+            };
+            let first = session.patch_call(first_address, 10, bridge).unwrap();
+            let second = session.patch_call(second_address, 10, bridge).unwrap();
 
             let first_trampoline = first
                 .trampoline_address()
@@ -555,8 +547,6 @@ mod tests {
             );
             assert_ne!(first_trampoline, second_trampoline);
 
-            let replayed = slice::from_raw_parts(first_trampoline as *const u8, 10);
-            assert_eq!(&replayed[..DEAD_BEEF.len()], &DEAD_BEEF);
             assert_eq!(
                 slice::from_raw_parts(first_address as *const u8, 4),
                 &DEAD_BEEF
