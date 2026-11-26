@@ -1,4 +1,7 @@
-use crate::{PatchError, ReturnType, arch::push_preserved_call, relative_offset};
+use crate::{
+    CallBridge, FlagPolicy, KeepReturn, PatchError, ReturnType, StackAlignment,
+    bridge::emit_call_bridge, relative_offset,
+};
 
 /// An internal destination in a [`Trampoline`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,24 +152,32 @@ impl Trampoline {
         self
     }
 
+    /// Appends a call to `bridge.callback` with volatile registers preserved.
+    ///
+    /// See [`CallBridge`] for the registers saved, the stack and flag
+    /// semantics, and the requirements on its byte slices.
+    ///
+    /// # Safety
+    ///
+    /// The bridge's `incoming_stack` must describe `RSP` where this code is
+    /// placed, after every instruction that precedes it in the trampoline. The
+    /// callback must follow the Windows-x64 ABI and must not take stack-passed
+    /// arguments. The `before_call` and `after_call` bytes must satisfy the
+    /// requirements documented on [`CallBridge`].
+    pub unsafe fn call(&mut self, bridge: CallBridge<'_>) -> &mut Self {
+        emit_call_bridge(&mut self.code, &bridge);
+        self
+    }
+
     /// Calls a function while preserving volatile Windows-x64 registers.
     ///
-    /// `argument_setup` runs after volatile state is saved and immediately
-    /// before the call. It may modify volatile registers to prepare callback
-    /// arguments, but must not change `RSP` or non-volatile registers.
+    /// This is the form used by the C ABI. It is equivalent to [`call`] with
+    /// a 16-byte aligned incoming stack and [`FlagPolicy::KeepProduced`]:
+    /// `argument_setup` is `before_call`, `result_handling` is `after_call`,
+    /// and `allow_return` selects the kept return register. The callback must
+    /// not take stack-passed arguments.
     ///
-    /// `result_handling` runs immediately after the call, before return
-    /// registers are restored. It may inspect or dereference return values and
-    /// leave state in flags or memory, but has the same register restrictions
-    /// as `argument_setup`.
-    ///
-    /// Every control-flow path in both byte sequences must eventually fall
-    /// through to the following generated instruction with `RSP` unchanged.
-    /// Branching out of either sequence can bypass the call or register
-    /// restoration and leave the trampoline's stack frame corrupted.
-    ///
-    /// `allow_return` selects a return register that remains available after
-    /// this operation. [`ReturnType::None`] restores every volatile register.
+    /// [`call`]: Self::call
     pub fn preserved_call(
         &mut self,
         function: *const (),
@@ -174,14 +185,23 @@ impl Trampoline {
         result_handling: &[u8],
         allow_return: ReturnType,
     ) -> &mut Self {
-        push_preserved_call(
-            &mut self.code,
-            function,
-            argument_setup,
-            result_handling,
-            allow_return,
-        );
-        self
+        let keep_return = match allow_return {
+            ReturnType::None => KeepReturn::Neither,
+            ReturnType::Rax => KeepReturn::Rax,
+            ReturnType::Xmm0 => KeepReturn::Xmm0,
+        };
+        // SAFETY: The method's callers already promise what `call` requires:
+        // an aligned incoming stack and straight-line byte sequences.
+        unsafe {
+            self.call(CallBridge {
+                callback: function,
+                incoming_stack: StackAlignment::Aligned16,
+                flags: FlagPolicy::KeepProduced,
+                keep_return,
+                before_call: argument_setup,
+                after_call: result_handling,
+            })
+        }
     }
 
     /// Applies every address-dependent fixup for an allocation at `address`.

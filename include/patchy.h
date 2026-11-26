@@ -98,6 +98,7 @@ PATCHY_API patchy_status patchy_session_overwrite(
 /*
  * output_trampoline may be NULL. replay_overwritten must be zero or one.
  * function must use the Windows x64 ABI expected at the patch site.
+ * The callback must not take stack-passed arguments.
  */
 PATCHY_API patchy_status patchy_session_patch_call(
     patchy_session *session,
@@ -210,6 +211,7 @@ PATCHY_API patchy_status patchy_trampoline_jump_if(
 /*
  * argument_setup and result_handling are uninterpreted x86-64 instruction
  * bytes. A NULL pointer is accepted only when its corresponding length is zero.
+ * The callback must not take stack-passed arguments.
  */
 PATCHY_API patchy_status patchy_trampoline_preserved_call(
     patchy_trampoline *trampoline,

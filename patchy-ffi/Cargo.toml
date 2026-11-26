@@ -9,3 +9,12 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 patchy = { package = "patchy-rs", path = ".." }
+
+[dev-dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+]

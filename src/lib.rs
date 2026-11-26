@@ -9,7 +9,7 @@
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 compile_error!("patchy currently supports only 64-bit Windows targets");
 
-mod arch;
+mod bridge;
 mod error;
 mod patch;
 mod process_module;
@@ -17,6 +17,7 @@ mod relative_jump;
 mod session;
 mod trampoline;
 
+pub use bridge::{CallBridge, FlagPolicy, KeepReturn, StackAlignment};
 pub use error::PatchError;
 pub use patch::Patch;
 pub use process_module::ProcessModule;

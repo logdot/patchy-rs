@@ -1,9 +1,8 @@
 use core::slice;
 
 use crate::{
-    PatchError, ReturnType, Trampoline,
-    arch::build_call,
-    relative_jump::{NEAR_JUMP, NEAR_JUMP_SIZE, build_near_jump, relative_offset},
+    CallBridge, PatchError, Trampoline,
+    relative_jump::{NEAR_JUMP_SIZE, build_near_jump},
     session::{PatchSession, PendingPatch},
 };
 
@@ -21,66 +20,37 @@ struct CodeAllocation {
 }
 
 impl PatchSession {
-    /// Prepares a call to `function` at `address`.
+    /// Replaces `size` bytes at `address` with a call described by `bridge`,
+    /// then resumes execution at `address + size`.
     ///
-    /// `size` determines how many bytes are overwritten and must be at least
-    /// five.
+    /// The overwritten instructions do not run. `size` must be at least five
+    /// and cover only complete instructions. To run some of them first, build
+    /// a [`Trampoline`] and use [`detour_trampoline`](Self::detour_trampoline).
     ///
     /// # Safety
     ///
     /// `address..address + size` must be readable and contain complete
-    /// instructions. The callback and selected return register must be
-    /// compatible with the machine state at the patch site.
+    /// instructions, none of which may be a branch target other than the first.
+    /// The bridge must satisfy the requirements documented on
+    /// [`Trampoline::call`] for the machine state at `address`, where `RSP` has
+    /// the alignment given by `bridge.incoming_stack`.
     pub unsafe fn patch_call(
         &mut self,
         address: usize,
-        function: *const (),
         size: usize,
-        save_overwritten: bool,
-        allow_return: ReturnType,
+        bridge: CallBridge<'_>,
     ) -> Result<Patch, PatchError> {
-        if size < NEAR_JUMP_SIZE {
-            return Err(PatchError::PatchTooSmall {
-                size,
-                minimum: NEAR_JUMP_SIZE,
-            });
-        }
-
-        // SAFETY: The caller guarantees that this source range is readable.
-        let overwritten = unsafe { slice::from_raw_parts(address as *const u8, size) }.to_vec();
-        let mut trampoline = Vec::new();
-
-        if save_overwritten {
-            trampoline.extend_from_slice(&overwritten);
-        }
-        trampoline.extend_from_slice(&build_call(function, allow_return));
-
-        let jump_displacement = trampoline.len() + 1;
-        trampoline.extend_from_slice(&[NEAR_JUMP, 0, 0, 0, 0]);
-        let trampoline_size = trampoline.len();
-        let continuation = address
+        let resume = address
             .checked_add(size)
             .ok_or(PatchError::AddressOverflow)?;
+        let mut trampoline = Trampoline::new();
+        // SAFETY: The caller provides the guarantees `Trampoline::call`
+        // requires, and the trampoline starts at the patched instruction.
+        unsafe { trampoline.call(bridge) }.relative_jump(resume);
 
-        // SAFETY: The source range was validated above and remains the
-        // caller's responsibility until installation.
-        unsafe {
-            self.prepare_detour(
-                address,
-                overwritten,
-                trampoline_size,
-                move |trampoline_address| {
-                    let mut code = trampoline.clone();
-                    let next_instruction = trampoline_address
-                        .checked_add(code.len())
-                        .ok_or(PatchError::AddressOverflow)?;
-                    let displacement = relative_offset(next_instruction, continuation)?;
-                    code[jump_displacement..jump_displacement + 4]
-                        .copy_from_slice(&displacement.to_le_bytes());
-                    Ok(code)
-                },
-            )
-        }
+        // SAFETY: The caller guarantees the source range and the generated
+        // trampoline preserves state on its only exit.
+        unsafe { self.detour_trampoline(address, size, trampoline) }
     }
 
     /// Prepares a near jump from `address` to `trampoline`.
@@ -237,13 +207,25 @@ impl Patch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FlagPolicy, KeepReturn, StackAlignment};
 
     #[test]
     fn invalid_patch_inputs_return_errors() {
         unsafe {
             let mut session = PatchSession::new();
             assert!(matches!(
-                session.patch_call(0, std::ptr::null(), 4, false, ReturnType::None),
+                session.patch_call(
+                    0,
+                    4,
+                    CallBridge {
+                        callback: std::ptr::null(),
+                        incoming_stack: StackAlignment::Aligned16,
+                        flags: FlagPolicy::Preserve,
+                        keep_return: KeepReturn::Neither,
+                        before_call: &[],
+                        after_call: &[],
+                    }
+                ),
                 Err(PatchError::PatchTooSmall {
                     size: 4,
                     minimum: NEAR_JUMP_SIZE

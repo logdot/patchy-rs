@@ -42,6 +42,14 @@ patchy = {
 }
 ```
 
+Callbacks are called through a `CallBridge`, which saves the volatile
+Windows-x64 registers, reserves the callee's shadow space, and describes the
+stack alignment (`StackAlignment`), flag handling (`FlagPolicy`) and kept return
+register (`KeepReturn`) explicitly. Use `PatchSession::patch_call` to replace a
+span with a bridge, or `Trampoline::call` to place one inside a larger
+trampoline. The `CallBridge` documentation lists the registers saved and the
+requirements on its `before_call` and `after_call` bytes.
+
 ## C and C++
 
 Build the C ABI library with:

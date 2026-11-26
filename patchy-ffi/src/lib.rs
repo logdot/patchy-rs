@@ -7,7 +7,10 @@ use std::{
     ptr, slice,
 };
 
-use patchy::{Condition, Label, PatchError, PatchSession, ProcessModule, ReturnType, Trampoline};
+use patchy::{
+    CallBridge, Condition, FlagPolicy, KeepReturn, Label, Patch, PatchError, PatchSession,
+    ProcessModule, ReturnType, StackAlignment, Trampoline,
+};
 
 /// Version of the ABI declared by `include/patchy.h`.
 pub const PATCHY_ABI_VERSION: u32 = 1;
@@ -307,6 +310,62 @@ pub unsafe extern "C" fn patchy_session_overwrite(
     })
 }
 
+/// Builds the C ABI v1 `patch_call` trampoline from the shared call bridge.
+///
+/// Replaying the overwritten instructions ahead of the call exists only for
+/// ABI v1; its replacement is tracked separately (fq2n). Version 1 assumed a
+/// 16-byte aligned stack and never promised anything about flags, so the
+/// bridge restores them.
+unsafe fn patch_call_v1(
+    session: &mut PatchSession,
+    address: usize,
+    function: *const (),
+    size: usize,
+    replay_overwritten: bool,
+    return_type: ReturnType,
+) -> Result<Patch, PatchError> {
+    let bridge = CallBridge {
+        callback: function,
+        incoming_stack: StackAlignment::Aligned16,
+        flags: FlagPolicy::Preserve,
+        keep_return: match return_type {
+            ReturnType::None => KeepReturn::Neither,
+            ReturnType::Rax => KeepReturn::Rax,
+            ReturnType::Xmm0 => KeepReturn::Xmm0,
+        },
+        before_call: &[],
+        after_call: &[],
+    };
+    if !replay_overwritten {
+        // SAFETY: The caller satisfies `PatchSession::patch_call`.
+        return unsafe { session.patch_call(address, size, bridge) };
+    }
+
+    let resume = address
+        .checked_add(size)
+        .ok_or(PatchError::AddressOverflow)?;
+    let trampoline = move |overwritten: &[u8]| {
+        let mut trampoline = Trampoline::new();
+        trampoline.bytes(overwritten);
+        // SAFETY: The caller satisfies the bridge requirements at `address`.
+        unsafe { trampoline.call(bridge) }.relative_jump(resume);
+        trampoline
+    };
+    let trampoline_size = trampoline(&[])
+        .len()
+        .checked_add(size)
+        .ok_or(PatchError::AddressOverflow)?;
+    // SAFETY: The caller guarantees that the source range is readable and
+    // that the replay and callback are valid at the patch site. `detour_with`
+    // rejects ranges that are too small before the closure can run.
+    unsafe {
+        session.detour_with(address, size, trampoline_size, move |trampoline_address| {
+            let overwritten = slice::from_raw_parts(address as *const u8, size);
+            trampoline(overwritten).build(trampoline_address)
+        })
+    }
+}
+
 /// Adds a callback trampoline to a pending session.
 ///
 /// `replay_overwritten` must be zero or one. `output_trampoline` may be null.
@@ -341,7 +400,8 @@ pub unsafe extern "C" fn patchy_session_patch_call(
         let session = unsafe { require_session(session)? };
         // SAFETY: The caller is responsible for the source and callback.
         let patch = unsafe {
-            session.inner.patch_call(
+            patch_call_v1(
+                &mut session.inner,
                 address,
                 function as *const (),
                 size,
