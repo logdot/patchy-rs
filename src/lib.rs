@@ -16,8 +16,8 @@ mod session;
 
 pub use patch::Patch;
 pub use patchy_code::{
-    CallBridge, Condition, DetourSite, FlagPolicy, KeepReturn, Label, PatchError, ReturnType,
-    StackAlignment, Trampoline, TrampolineFixup, TrampolinePlan, relative_offset,
+    CallBridge, Condition, DetourSite, FlagPolicy, KeepReturn, Label, PatchError, StackAlignment,
+    Trampoline, TrampolineFixup, TrampolinePlan, relative_offset,
 };
 pub use process_module::ProcessModule;
 pub use session::PatchSession;

@@ -1,6 +1,6 @@
 use crate::{
-    CallBridge, FlagPolicy, KeepReturn, PatchError, ReturnType, StackAlignment, TrampolineFixup,
-    TrampolinePlan, bridge::emit_call_bridge, relative_offset,
+    CallBridge, PatchError, TrampolineFixup, TrampolinePlan, bridge::emit_call_bridge,
+    relative_offset,
 };
 
 /// An internal destination in a [`Trampoline`].
@@ -217,41 +217,6 @@ impl Trampoline {
         self
     }
 
-    /// Calls a function while preserving volatile Windows-x64 registers.
-    ///
-    /// This is the form used by the C ABI. It is equivalent to [`call`] with
-    /// a 16-byte aligned incoming stack and [`FlagPolicy::KeepProduced`]:
-    /// `argument_setup` is `before_call`, `result_handling` is `after_call`,
-    /// and `allow_return` selects the kept return register. The callback must
-    /// not take stack-passed arguments.
-    ///
-    /// [`call`]: Self::call
-    pub fn preserved_call(
-        &mut self,
-        function: *const (),
-        argument_setup: &[u8],
-        result_handling: &[u8],
-        allow_return: ReturnType,
-    ) -> &mut Self {
-        let keep_return = match allow_return {
-            ReturnType::None => KeepReturn::Neither,
-            ReturnType::Rax => KeepReturn::Rax,
-            ReturnType::Xmm0 => KeepReturn::Xmm0,
-        };
-        // SAFETY: The method's callers already promise what `call` requires:
-        // an aligned incoming stack and straight-line byte sequences.
-        unsafe {
-            self.call(CallBridge {
-                callback: function,
-                incoming_stack: StackAlignment::Aligned16,
-                flags: FlagPolicy::KeepProduced,
-                keep_return,
-                before_call: argument_setup,
-                after_call: result_handling,
-            })
-        }
-    }
-
     /// Builds a trampoline that does not use site-relative replay or resume.
     /// For a site-dependent trampoline, use [`Self::into_plan`] instead.
     pub fn build(&self, address: usize) -> Result<Vec<u8>, PatchError> {
@@ -308,6 +273,7 @@ impl Trampoline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FlagPolicy, KeepReturn, StackAlignment};
 
     #[test]
     fn a_site_plan_resolves_replay_and_resume_at_placement() {
@@ -379,12 +345,16 @@ mod tests {
     fn predicate_call_preserves_all_volatile_registers() {
         let mut trampoline = Trampoline::new();
         let returned_true = trampoline.new_label();
-        trampoline.preserved_call(
-            0x140001000usize as *const (),
-            &[0x48, 0x89, 0xF9],
-            &[0x84, 0xC0],
-            ReturnType::None,
-        );
+        unsafe {
+            trampoline.call(CallBridge {
+                callback: 0x140001000usize as *const (),
+                incoming_stack: StackAlignment::Aligned16,
+                flags: FlagPolicy::KeepProduced,
+                keep_return: KeepReturn::Neither,
+                before_call: &[0x48, 0x89, 0xF9],
+                after_call: &[0x84, 0xC0],
+            });
+        }
         trampoline.jump_if(Condition::NotEqual, returned_true);
         trampoline.bind(returned_true).unwrap();
 
@@ -415,12 +385,16 @@ mod tests {
     fn result_handling_can_compare_arbitrary_values() {
         let mut trampoline = Trampoline::new();
         let returned_five = trampoline.new_label();
-        trampoline.preserved_call(
-            0x140001000usize as *const (),
-            &[],
-            &[0x3C, 0x05],
-            ReturnType::None,
-        );
+        unsafe {
+            trampoline.call(CallBridge {
+                callback: 0x140001000usize as *const (),
+                incoming_stack: StackAlignment::Aligned16,
+                flags: FlagPolicy::KeepProduced,
+                keep_return: KeepReturn::Neither,
+                before_call: &[],
+                after_call: &[0x3C, 0x05],
+            });
+        }
         trampoline.jump_if(Condition::Equal, returned_five);
         trampoline.bind(returned_five).unwrap();
 
@@ -432,7 +406,16 @@ mod tests {
     #[test]
     fn selected_return_register_remains_available() {
         let mut trampoline = Trampoline::new();
-        trampoline.preserved_call(0x140001000usize as *const (), &[], &[], ReturnType::Rax);
+        unsafe {
+            trampoline.call(CallBridge {
+                callback: 0x140001000usize as *const (),
+                incoming_stack: StackAlignment::Aligned16,
+                flags: FlagPolicy::KeepProduced,
+                keep_return: KeepReturn::Rax,
+                before_call: &[],
+                after_call: &[],
+            });
+        }
 
         let code = trampoline.build(0x180000000).unwrap();
         assert!(code.ends_with(&[0x48, 0x8D, 0x64, 0x24, 0x08]));

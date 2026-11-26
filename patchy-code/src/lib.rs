@@ -16,17 +16,6 @@ pub use error::PatchError;
 pub use plan::{TrampolineFixup, TrampolinePlan};
 pub use trampoline::{Condition, DetourSite, Label, Trampoline};
 
-/// Selects which hook return register is allowed to replace the original value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReturnType {
-    /// Preserve both `RAX` and `XMM0`.
-    None,
-    /// Keep the hook's result in `RAX`.
-    Rax,
-    /// Keep the hook's result in `XMM0`.
-    Xmm0,
-}
-
 /// Calculates a signed 32-bit relative displacement.
 ///
 /// `next_instruction` is the address immediately after the instruction that
