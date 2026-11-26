@@ -96,7 +96,7 @@ placement; `CallBridge` copies `before_call` and `after_call` verbatim without
 relocating them, so those slices must remain position-independent.
 
 To replay instructions displaced by a detour, build the trampoline with
-`PatchSession::detour_trampoline_with`. Call `site.replay_verbatim(&mut trampoline)`
+`PatchSession::detour_trampoline`. Call `site.replay_verbatim(&mut trampoline)`
 where the original instructions should run, and `site.resume(&mut trampoline)`
 where control should return to the game after the patched span. Replay uses the
 same bytes that Patchy checks during installation. It does not relocate

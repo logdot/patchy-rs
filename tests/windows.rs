@@ -78,7 +78,7 @@ fn run_replay_hook(replay_first: bool) -> u32 {
 
         let mut session = PatchSession::new();
         session
-            .detour_trampoline_with(address, REPLAY_BYTES.len(), |site| {
+            .detour_trampoline(address, REPLAY_BYTES.len(), |site| {
                 let mut code = Trampoline::new();
                 if replay_first {
                     site.replay_verbatim(&mut code);
@@ -154,7 +154,7 @@ fn a_callback_predicate_can_skip_replay() {
 
         let mut session = PatchSession::new();
         session
-            .detour_trampoline_with(address, REPLAY_BYTES.len(), |site| {
+            .detour_trampoline(address, REPLAY_BYTES.len(), |site| {
                 let mut code = Trampoline::new();
                 let skip = code.new_label();
                 code.call(CallBridge {
@@ -187,7 +187,7 @@ fn replay_uses_the_snapshot_validated_during_installation() {
         write_code(address, &RETURN_ONE);
         let mut session = PatchSession::new();
         let patch = session
-            .detour_trampoline_with(address, REPLAY_BYTES.len(), |site| {
+            .detour_trampoline(address, REPLAY_BYTES.len(), |site| {
                 write_code(address, &RETURN_TWO);
                 let mut code = Trampoline::new();
                 site.replay_verbatim(&mut code);

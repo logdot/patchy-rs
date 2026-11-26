@@ -25,7 +25,7 @@ impl PatchSession {
     ///
     /// The overwritten instructions do not run. `size` must be at least five
     /// and cover only complete instructions. To replay them, use
-    /// [`detour_trampoline_with`](Self::detour_trampoline_with).
+    /// [`detour_trampoline`](Self::detour_trampoline).
     ///
     /// # Safety
     ///
@@ -43,7 +43,7 @@ impl PatchSession {
         // SAFETY: The caller guarantees the source range and the generated
         // trampoline calls the bridge with the declared state, then resumes.
         unsafe {
-            self.detour_trampoline_with(address, size, |site| {
+            self.detour_trampoline(address, size, |site| {
                 let mut trampoline = Trampoline::new();
                 trampoline.call(bridge);
                 site.resume(&mut trampoline);
@@ -78,26 +78,6 @@ impl PatchSession {
         }
     }
 
-    /// Prepares a near jump to a relocation-aware trampoline.
-    ///
-    /// # Safety
-    ///
-    /// The source range must be readable and contain complete instructions.
-    /// The built trampoline must preserve the surrounding function state on
-    /// every exit.
-    pub unsafe fn detour_trampoline(
-        &mut self,
-        address: usize,
-        size: usize,
-        trampoline: Trampoline,
-    ) -> Result<Patch, PatchError> {
-        if trampoline.is_empty() {
-            return Err(PatchError::EmptyTrampoline);
-        }
-        // SAFETY: Both methods require a valid source span and trampoline.
-        unsafe { self.detour_trampoline_with(address, size, |_| Ok(trampoline)) }
-    }
-
     /// Captures the source span, then builds a trampoline for that detour.
     ///
     /// `build` runs once after capture. Use [`DetourSite::replay_verbatim`] and
@@ -110,7 +90,7 @@ impl PatchSession {
     /// consist of whole instructions with no incoming branches into the middle
     /// of the span. The returned trampoline must contain valid x86-64 code and
     /// preserve the state required by the surrounding function on every exit.
-    pub unsafe fn detour_trampoline_with<F>(
+    pub unsafe fn detour_trampoline<F>(
         &mut self,
         address: usize,
         size: usize,
@@ -132,7 +112,7 @@ impl PatchSession {
     /// against a single snapshot of this detour site.
     ///
     /// # Safety
-    /// The source and supplied code must satisfy [`Self::detour_trampoline_with`].
+    /// The source and supplied code must satisfy [`Self::detour_trampoline`].
     pub unsafe fn detour_plan(
         &mut self,
         address: usize,
