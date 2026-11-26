@@ -9,7 +9,7 @@ use std::{
 
 use patchy::{
     CallBridge, Condition, FlagPolicy, KeepReturn, Label, Patch, PatchError, PatchSession,
-    ProcessModule, ReturnType, StackAlignment, Trampoline,
+    ProcessModule, StackAlignment, Trampoline,
 };
 
 /// Version of the ABI declared by `include/patchy.h`.
@@ -189,11 +189,11 @@ unsafe fn write_required<T>(output: *mut T, value: T, name: &'static str) -> Res
     Ok(())
 }
 
-fn parse_return_type(value: u32) -> Result<ReturnType, FfiError> {
+fn parse_return_type(value: u32) -> Result<KeepReturn, FfiError> {
     match value {
-        0 => Ok(ReturnType::None),
-        1 => Ok(ReturnType::Rax),
-        2 => Ok(ReturnType::Xmm0),
+        0 => Ok(KeepReturn::Neither),
+        1 => Ok(KeepReturn::Rax),
+        2 => Ok(KeepReturn::Xmm0),
         _ => Err(FfiError::invalid("invalid patchy_return_type value")),
     }
 }
@@ -321,17 +321,13 @@ unsafe fn patch_call_v1(
     function: *const (),
     size: usize,
     replay_overwritten: bool,
-    return_type: ReturnType,
+    keep_return: KeepReturn,
 ) -> Result<Patch, PatchError> {
     let bridge = CallBridge {
         callback: function,
         incoming_stack: StackAlignment::Aligned16,
         flags: FlagPolicy::Preserve,
-        keep_return: match return_type {
-            ReturnType::None => KeepReturn::Neither,
-            ReturnType::Rax => KeepReturn::Rax,
-            ReturnType::Xmm0 => KeepReturn::Xmm0,
-        },
+        keep_return,
         before_call: &[],
         after_call: &[],
     };
@@ -764,8 +760,8 @@ pub unsafe extern "C" fn patchy_trampoline_jump_if(
 ///
 /// # Safety
 ///
-/// The trampoline, callback address, and both byte ranges must satisfy
-/// `Trampoline::preserved_call`.
+/// The trampoline pointer must be live and the callback and byte ranges must
+/// satisfy `Trampoline::call` for a 16-byte aligned incoming stack.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn patchy_trampoline_preserved_call(
     trampoline: *mut PatchyTrampoline,
@@ -789,12 +785,17 @@ pub unsafe extern "C" fn patchy_trampoline_preserved_call(
         // SAFETY: The caller supplies both readable byte ranges.
         let result_handling =
             unsafe { require_bytes(result_handling, result_handling_length, "result handling")? };
-        trampoline.inner.preserved_call(
-            function as *const (),
-            argument_setup,
-            result_handling,
-            return_type,
-        );
+        // SAFETY: The caller guarantees the callback, alignment, and snippets.
+        unsafe {
+            trampoline.inner.call(CallBridge {
+                callback: function as *const (),
+                incoming_stack: StackAlignment::Aligned16,
+                flags: FlagPolicy::KeepProduced,
+                keep_return: return_type,
+                before_call: argument_setup,
+                after_call: result_handling,
+            });
+        }
         Ok(())
     })
 }
